@@ -1,0 +1,8 @@
+/node_modules/
+tools/fixturegen/node_modules/
+tools/verify/node_modules/
+*.exe
+*.test
+*.out
+/dist/
+.env
