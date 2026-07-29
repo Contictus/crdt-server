@@ -98,6 +98,29 @@ tombstones differently (`Y.Doc({gc})` controls whether deleted items become `GC`
 this, `text-delete` (gc off, `ContentDeleted` preserved) and `gc-and-skip` (gc on, structs
 collapsed) cannot both be checked by the same harness.
 
+### D12. `lib0.Encoder` collects a sticky error instead of returning one per write
+Every write would otherwise return an `error` that no call site can do anything useful with,
+and the CRDT encoder makes thousands of them. Instead the first failure is recorded, later
+writes become no-ops, and callers check `Err()` once — the `bufio.Writer` pattern. The only
+failure a writer can produce is a value above `MaxSafeInteger`, which is a programming error,
+not a runtime condition.
+
+### D13. Go is deliberately stricter than lib0 on truncated input
+`lib0/decoding.js` `readVarInt` reads past the end of its buffer, gets `undefined`, and
+returns `0` instead of throwing (`readVarUint` does throw). Go returns `ErrUnexpectedEOF`.
+Rejected bug-compatibility: silently accepting truncated frames from the network is how a
+server ends up integrating garbage. The divergence is recorded as a `goStricter` vector in
+`testdata/fixtures/lib0/vectors.json`, and the generator asserts lib0 still behaves that way,
+so if a future lib0 fixes it we find out.
+
+### D14. `-race` needs cgo, which needs a C compiler this machine does not have
+`go test -race` on windows/amd64 requires `CGO_ENABLED=1` and gcc; `go env` reports
+`CGO_ENABLED=0` and there is no gcc/clang on PATH. Tests currently run without `-race`.
+This has no effect on `internal/crdt/lib0` (no goroutines), but it must be resolved before
+the room actor and gateway land in Phase 2, where `-race` is the whole point. Options: install
+a MinGW-w64 toolchain via winget, or run the race build in CI/WSL/Docker on Linux. Awaiting
+your call.
+
 ---
 
 ## Part 2 — The wire format, derived from source
@@ -426,6 +449,10 @@ concurrent same-position inserts — which is why `text-concurrent-same-index` a
 7. The first struct in a client block may be written sliced, with a synthesised
    self-referencing origin.
 8. `varUint` is limited to 2^53 − 1 on the JS side; Go must not emit anything larger.
+9. String struct lengths are **UTF-16 code units** (`ContentString.getLength()` returns
+   `str.length`, `ContentString.js:22`), while the `varString` length prefix is **UTF-8
+   bytes**. `"🎉"` is 2 units of clock and 4 bytes on the wire. Using `len(s)` or
+   `utf8.RuneCountInString` for clock arithmetic diverges on the first emoji.
 
 ---
 
