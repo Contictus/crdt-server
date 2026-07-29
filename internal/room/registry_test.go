@@ -49,6 +49,62 @@ func TestManagerCapsResidentRooms(t *testing.T) {
 	}
 }
 
+// The cap is an LRU, not a wall: an idle room is written out and dropped to
+// make space, because refusing to open a document is worse than paying for a
+// snapshot.
+func TestManagerEvictsLeastRecentlyUsed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fake := &fakeStore{}
+	m := NewManager(ctx, ManagerConfig{MaxRooms: 2, Room: Config{
+		IdleTimeout:   time.Hour,
+		Store:         fake,
+		FlushInterval: 2 * time.Millisecond,
+		Logger:        quietLogger(),
+	}})
+
+	oldest := &fakeConn{id: 1}
+	if _, err := m.Join("doc-1", oldest); err != nil {
+		t.Fatal(err)
+	}
+	newer := &fakeConn{id: 2}
+	if _, err := m.Join("doc-2", newer); err != nil {
+		t.Fatal(err)
+	}
+	// doc-1 is now idle and least recently used; doc-2 still has a connection.
+	if _, err := m.Join("doc-1", oldest); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.rooms["doc-1"].Leave(oldest); err != nil {
+		t.Fatal(err)
+	}
+
+	// doc-3 does not fit, so the idle room goes and its document is written.
+	if _, err := m.Join("doc-3", &fakeConn{id: 3}); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if m.Len() != 2 {
+		t.Fatalf("%d rooms resident, want 2", m.Len())
+	}
+	m.mu.Lock()
+	_, stillThere := m.rooms["doc-1"]
+	m.mu.Unlock()
+	if stillThere {
+		t.Fatal("the least recently used room was not evicted")
+	}
+	if _, snapshots := fake.counts(); snapshots == 0 {
+		t.Fatal("the evicted room did not write itself out")
+	}
+
+	// A room with somebody in it is never evicted for space.
+	if _, err := m.Join("doc-4", &fakeConn{id: 4}); !errors.Is(err, ErrTooManyRooms) {
+		t.Fatalf("got %v, want ErrTooManyRooms", err)
+	}
+	if closed, _ := newer.status(); closed {
+		t.Fatal("a connected client was disconnected to free memory")
+	}
+}
+
 func TestManagerCancelClosesRooms(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := NewManager(ctx, ManagerConfig{Room: Config{IdleTimeout: time.Hour}})

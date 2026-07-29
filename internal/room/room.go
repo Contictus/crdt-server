@@ -182,6 +182,12 @@ func (r *Room) Done() <-chan struct{} { return r.done }
 type command interface{ isCommand() }
 
 type joinCmd struct{ conn Conn }
+
+// evictCmd asks the room to shut down if nobody is connected. The reply says
+// whether it did, so the registry can move on to the next candidate instead of
+// guessing.
+type evictCmd struct{ evicted chan bool }
+
 type leaveCmd struct{ conn Conn }
 type frameCmd struct {
 	conn  Conn
@@ -190,6 +196,7 @@ type frameCmd struct {
 type tickCmd struct{ now time.Time }
 
 func (joinCmd) isCommand()  {}
+func (evictCmd) isCommand() {}
 func (leaveCmd) isCommand() {}
 func (frameCmd) isCommand() {}
 func (tickCmd) isCommand()  {}
@@ -279,8 +286,33 @@ func (r *Room) handle(c command) bool {
 		r.frame(v.conn, v.frame)
 	case tickCmd:
 		return r.tick(v.now)
+	case evictCmd:
+		if len(r.conns) > 0 {
+			v.evicted <- false
+			return false
+		}
+		r.evict()
+		v.evicted <- true
+		return true
 	}
 	return false
+}
+
+// EvictIfIdle asks the room to stop, and reports whether it did. A room with
+// connections refuses: freeing memory by disconnecting people who are editing
+// is not a trade the registry is allowed to make.
+func (r *Room) EvictIfIdle() bool {
+	reply := make(chan bool, 1)
+	if err := r.send(evictCmd{reply}); err != nil {
+		// Already gone, which is what the caller wanted.
+		return true
+	}
+	select {
+	case ok := <-reply:
+		return ok
+	case <-r.done:
+		return true
+	}
 }
 
 func (r *Room) join(conn Conn) {
@@ -434,12 +466,17 @@ func (r *Room) tick(now time.Time) bool {
 	if now.Sub(r.lastEmpty) < r.cfg.IdleTimeout {
 		return false
 	}
-	r.log.Info("evicting idle room")
+	r.evict()
+	return true
+}
+
+// evict writes the document out and shuts the room down.
+func (r *Room) evict() {
+	r.log.Info("evicting room")
 	if r.cfg.OnEvict != nil {
 		r.cfg.OnEvict(r.cfg.Name, r.doc)
 	}
 	r.stop(CloseGoingAway, "room evicted")
-	return true
 }
 
 // broadcast sends a frame to every connection except except.
