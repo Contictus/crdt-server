@@ -132,8 +132,9 @@ const checkOne = (fixture, updatePaths, { json = false, quiet = false, label = f
 }
 
 const selfTest = () => {
+  // Document scenarios only: directories that carry a full-state update.
   const fixtures = fs.readdirSync(fixturesRoot, { withFileTypes: true })
-    .filter((e) => e.isDirectory() && e.name !== 'awareness')
+    .filter((e) => e.isDirectory() && fs.existsSync(path.join(fixturesRoot, e.name, 'state.bin')))
     .map((e) => e.name)
     .sort()
   let failed = 0

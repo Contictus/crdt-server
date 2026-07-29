@@ -7,6 +7,7 @@
     "y-websocket": "3.0.0"
   },
   "updateFormat": "v1",
+  "lib0Vectors": "lib0/vectors.json",
   "fixtures": [
     {
       "name": "text-insert-single",

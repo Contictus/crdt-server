@@ -23,7 +23,8 @@ import {
 } from 'y-protocols/awareness'
 
 import { scenarios, createHarness } from './scenarios.mjs'
-import { dumpDoc, dumpUpdate, jsonSafe } from './dump.mjs'
+import { buildLib0Vectors, selfCheckLib0Vectors } from './lib0.mjs'
+import { dumpDoc, dumpUpdate, scanUpdate, jsonSafe } from './dump.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repoRoot = path.resolve(here, '..', '..')
@@ -208,6 +209,12 @@ const main = () => {
   fs.rmSync(fixturesRoot, { recursive: true, force: true })
   fs.mkdirSync(fixturesRoot, { recursive: true })
 
+  const lib0Vectors = buildLib0Vectors()
+  selfCheckLib0Vectors(lib0Vectors)
+  fs.mkdirSync(path.join(fixturesRoot, 'lib0'), { recursive: true })
+  writeJSON(path.join(fixturesRoot, 'lib0'), 'vectors.json', lib0Vectors)
+  process.stdout.write('  lib0 (primitive codec vectors)\n')
+
   const generated = []
   for (const scenario of scenarios) {
     generated.push(generateScenario(scenario))
@@ -220,6 +227,7 @@ const main = () => {
     generator: 'tools/fixturegen',
     versions: { ...pkg.dependencies, 'y-websocket': pkg.devDependencies['y-websocket'] },
     updateFormat: 'v1',
+    lib0Vectors: 'lib0/vectors.json',
     fixtures: generated
   })
 
@@ -233,6 +241,10 @@ const main = () => {
 const assertCoverage = () => {
   const seenRefs = new Set()
   const seenKinds = new Set()
+  // Info-byte shapes we must keep covering, because they are the ones a decoder
+  // written from intuition gets wrong (DECISIONS.md §2.3).
+  let parentSubOnWire = 0 // bit 5 set, no origin/rightOrigin -> string follows
+  let parentSubInherited = 0 // bit 5 set, origin present -> nothing follows
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, entry.name)
@@ -250,6 +262,27 @@ const assertCoverage = () => {
         seenKinds.add(s.kind)
         if (s.kind === 'Item') seenRefs.add(s.content.ref)
       }
+
+      // The independent grammar scan must agree with yjs on every struct, and
+      // must consume the file exactly.
+      const scanned = scanUpdate(new Uint8Array(fs.readFileSync(p)))
+      if (scanned.consumed !== scanned.total) {
+        throw new Error(`${p}: grammar scan consumed ${scanned.consumed} of ${scanned.total} bytes`)
+      }
+      if (scanned.structs.length !== decoded.structs.length) {
+        throw new Error(`${p}: grammar scan found ${scanned.structs.length} structs, yjs found ${decoded.structs.length}`)
+      }
+      for (let i = 0; i < scanned.structs.length; i++) {
+        const a = scanned.structs[i]
+        const b = decoded.structs[i]
+        if (a.kind !== b.kind || a.id.client !== b.id.client || a.id.clock !== b.id.clock || a.len !== b.len) {
+          throw new Error(`${p}: struct ${i} mismatch: scan ${JSON.stringify(a.id)}/${a.kind}/${a.len} vs yjs ${JSON.stringify(b.id)}/${b.kind}/${b.len}`)
+        }
+        if (a.kind === 'Item' && a.parentSubFlag) {
+          if (a.parentSubOnWire) parentSubOnWire++
+          else parentSubInherited++
+        }
+      }
     }
   }
   walk(fixturesRoot)
@@ -265,8 +298,14 @@ const assertCoverage = () => {
       `fixture coverage gap: missing content refs [${missingRefs}], missing struct kinds [${missingKinds}]`
     )
   }
+  if (parentSubOnWire === 0 || parentSubInherited === 0) {
+    throw new Error(
+      `fixture coverage gap: parentSub cases (on-wire=${parentSubOnWire}, inherited=${parentSubInherited}); both must occur`
+    )
+  }
   process.stdout.write(
-    `coverage: content refs {${[...seenRefs].sort((a, b) => a - b).join(',')}} struct kinds {${[...seenKinds].sort().join(',')}}\n`
+    `coverage: content refs {${[...seenRefs].sort((a, b) => a - b).join(',')}} struct kinds {${[...seenKinds].sort().join(',')}}\n` +
+    `          parentSub structs: ${parentSubOnWire} written on the wire, ${parentSubInherited} inherited from left\n`
   )
 }
 

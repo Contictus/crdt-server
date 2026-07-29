@@ -5,6 +5,7 @@
  * the document is" is computed by exactly one piece of code.
  */
 import * as Y from 'yjs'
+import * as decoding from 'lib0/decoding'
 
 // Re-exported so that tools/verify uses the exact same yjs installation as the
 // generator: there is only one node_modules in this repo.
@@ -128,6 +129,109 @@ const contentJSON = (content) => {
     case 8: return { ...base, values: jsonSafe(content.arr) }
     case 9: return { ...base, guid: content.doc.guid }
     default: return base
+  }
+}
+
+/**
+ * Independent raw scan of an update, written straight from the grammar in
+ * DECISIONS.md §2.2-2.4 rather than from yjs internals. Returns the info byte of
+ * every struct — which Y.decodeUpdate does not expose — and doubles as a check
+ * that the documented grammar really is the grammar: the generator asserts that
+ * this scanner and Y.decodeUpdate agree on every struct id and length.
+ *
+ * This is also the reference the Go decoder is written against.
+ */
+export const scanUpdate = (update) => {
+  const d = decoding.createDecoder(update)
+  const structs = []
+  const numClients = decoding.readVarUint(d)
+  for (let c = 0; c < numClients; c++) {
+    const numStructs = decoding.readVarUint(d)
+    const client = decoding.readVarUint(d)
+    let clock = decoding.readVarUint(d)
+    for (let i = 0; i < numStructs; i++) {
+      const info = decoding.readUint8(d)
+      const ref = info & 0x1f
+      const s = { info, ref, id: { client, clock } }
+      if (ref === 0) { // GC
+        s.kind = 'GC'
+        s.len = decoding.readVarUint(d)
+      } else if (ref === 10) { // Skip
+        s.kind = 'Skip'
+        s.len = decoding.readVarUint(d)
+      } else {
+        s.kind = 'Item'
+        s.hasOrigin = (info & 0x80) !== 0
+        s.hasRightOrigin = (info & 0x40) !== 0
+        s.parentSubFlag = (info & 0x20) !== 0
+        if (s.hasOrigin) s.origin = { client: decoding.readVarUint(d), clock: decoding.readVarUint(d) }
+        if (s.hasRightOrigin) s.rightOrigin = { client: decoding.readVarUint(d), clock: decoding.readVarUint(d) }
+        const cantCopyParentInfo = !s.hasOrigin && !s.hasRightOrigin
+        if (cantCopyParentInfo) {
+          s.parent = decoding.readVarUint(d) === 1
+            ? { key: decoding.readVarString(d) }
+            : { id: { client: decoding.readVarUint(d), clock: decoding.readVarUint(d) } }
+          // parentSub is on the wire only in this branch, even though the info
+          // bit is set whenever parentSub is non-null.
+          if (s.parentSubFlag) s.parentSub = decoding.readVarString(d)
+        }
+        s.parentSubOnWire = cantCopyParentInfo && s.parentSubFlag
+        s.len = readContentLength(d, ref)
+      }
+      clock += s.len
+      structs.push(s)
+    }
+  }
+  const deleteSet = {}
+  const dsClients = decoding.readVarUint(d)
+  for (let i = 0; i < dsClients; i++) {
+    const client = decoding.readVarUint(d)
+    const n = decoding.readVarUint(d)
+    const ranges = []
+    for (let j = 0; j < n; j++) ranges.push([decoding.readVarUint(d), decoding.readVarUint(d)])
+    deleteSet[String(client)] = ranges
+  }
+  return { structs, deleteSet, consumed: d.pos, total: update.length }
+}
+
+/** Reads one content body and returns the length it contributes to the clock. */
+const readContentLength = (d, ref) => {
+  switch (ref) {
+    case 1: // Deleted
+      return decoding.readVarUint(d)
+    case 2: { // JSON (legacy)
+      const len = decoding.readVarUint(d)
+      for (let i = 0; i < len; i++) decoding.readVarString(d)
+      return len
+    }
+    case 3: // Binary
+      decoding.readVarUint8Array(d)
+      return 1
+    case 4: // String — length counts UTF-16 code units, not bytes or runes
+      return decoding.readVarString(d).length
+    case 5: // Embed
+      decoding.readVarString(d)
+      return 1
+    case 6: // Format
+      decoding.readVarString(d)
+      decoding.readVarString(d)
+      return 1
+    case 7: { // Type
+      const typeRef = decoding.readVarUint(d)
+      if (typeRef === 3 || typeRef === 5) decoding.readVarString(d) // nodeName / hookName
+      return 1
+    }
+    case 8: { // Any
+      const len = decoding.readVarUint(d)
+      for (let i = 0; i < len; i++) decoding.readAny(d)
+      return len
+    }
+    case 9: // Doc
+      decoding.readVarString(d)
+      decoding.readAny(d)
+      return 1
+    default:
+      throw new Error(`unknown content ref ${ref}`)
   }
 }
 
