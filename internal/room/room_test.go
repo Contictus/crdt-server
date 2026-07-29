@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,8 +25,14 @@ func readFixture(t *testing.T, parts ...string) []byte {
 }
 
 // fakeConn records what the room sent it and can be told to stop accepting.
+//
+// It is mutex-guarded because some tests drive the room's handle method
+// directly, on the test goroutine, while others run a real room and inspect the
+// connection while its goroutine is writing to it.
 type fakeConn struct {
-	id     uint64
+	id uint64
+
+	mu     sync.Mutex
 	sent   [][]byte
 	full   bool
 	closed bool
@@ -36,6 +43,8 @@ type fakeConn struct {
 func (c *fakeConn) ID() uint64 { return c.id }
 
 func (c *fakeConn) Send(frame []byte) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.full {
 		return false
 	}
@@ -44,6 +53,8 @@ func (c *fakeConn) Send(frame []byte) bool {
 }
 
 func (c *fakeConn) Close(code int, reason string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.closed {
 		return
 	}
@@ -52,9 +63,25 @@ func (c *fakeConn) Close(code int, reason string) {
 
 // take removes and returns the frames received so far.
 func (c *fakeConn) take() [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	out := c.sent
 	c.sent = nil
 	return out
+}
+
+// frames returns the frames received so far without consuming them.
+func (c *fakeConn) frames() [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][]byte(nil), c.sent...)
+}
+
+// status reports whether the connection was closed and with which code.
+func (c *fakeConn) status() (bool, int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed, c.code
 }
 
 func (c *fakeConn) decodeAll(t *testing.T) []protocol.Message {
@@ -244,18 +271,18 @@ func TestSlowConnectionIsClosedAndRoomSurvives(t *testing.T) {
 
 	r.handle(frameCmd{sender, protocol.WriteUpdate(readFixture(t, "text-insert-single", "update-000.bin"))})
 
-	if !slow.closed || slow.code != ClosePolicyViolation {
-		t.Fatalf("slow conn closed=%v code=%d, want 1008", slow.closed, slow.code)
+	if closed, code := slow.status(); !closed || code != ClosePolicyViolation {
+		t.Fatalf("slow conn closed=%v code=%d, want 1008", closed, code)
 	}
 	if _, ok := r.conns[slow]; ok {
 		t.Fatal("slow conn still in the room")
 	}
-	if len(fast.sent) != 1 {
-		t.Fatalf("fast conn got %d frames, want 1", len(fast.sent))
+	if n := len(fast.frames()); n != 1 {
+		t.Fatalf("fast conn got %d frames, want 1", n)
 	}
 	// The room is still usable.
 	r.handle(frameCmd{sender, protocol.WriteSyncStep1(emptyStateVector(t))})
-	if len(sender.sent) == 0 {
+	if len(sender.frames()) == 0 {
 		t.Fatal("room stopped answering after dropping a slow client")
 	}
 }
@@ -268,16 +295,16 @@ func TestUndecodableFrameClosesOnlyThatConnection(t *testing.T) {
 	r.handle(joinCmd{good})
 
 	r.handle(frameCmd{bad, []byte{0x09, 0x09}})
-	if !bad.closed || bad.code != CloseProtocolError {
-		t.Fatalf("closed=%v code=%d, want 1002", bad.closed, bad.code)
+	if closed, code := bad.status(); !closed || code != CloseProtocolError {
+		t.Fatalf("closed=%v code=%d, want 1002", closed, code)
 	}
-	if good.closed {
+	if closed, _ := good.status(); closed {
 		t.Fatal("an unrelated connection was closed")
 	}
 
 	r.handle(frameCmd{good, protocol.WriteUpdate([]byte{0xff, 0xff, 0xff})})
-	if !good.closed || good.code != CloseProtocolError {
-		t.Fatalf("bad update: closed=%v code=%d, want 1002", good.closed, good.code)
+	if closed, code := good.status(); !closed || code != CloseProtocolError {
+		t.Fatalf("bad update: closed=%v code=%d, want 1002", closed, code)
 	}
 }
 

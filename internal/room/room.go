@@ -18,6 +18,7 @@ import (
 
 	"github.com/mesutokul/ycollab/internal/crdt"
 	"github.com/mesutokul/ycollab/internal/protocol"
+	"github.com/mesutokul/ycollab/internal/store"
 )
 
 // ErrClosed means the room stopped between the moment a caller looked it up and
@@ -53,14 +54,25 @@ type Config struct {
 	IdleTimeout  time.Duration
 	AwarenessTTL time.Duration
 
+	// Store persists the document. Nil keeps everything in memory, which is
+	// what the room's own unit tests want and what the server does when it is
+	// started without a database.
+	Store Persistence
+	// CompactAfter is how many updates accumulate before the log is folded into
+	// a new snapshot.
+	CompactAfter int
+	// FlushInterval bounds how long an update sits in memory before it is
+	// written.
+	FlushInterval time.Duration
+
 	Logger *slog.Logger
 
 	// Now is the clock, injectable so tests do not have to sleep.
 	Now func() time.Time
 
-	// OnEvict runs when an idle room is about to disappear, before it stops.
-	// Phase 3 writes a snapshot here; in Phase 2 it is nil and the document is
-	// simply dropped, which is correct for a server with no persistence.
+	// OnEvict runs when an idle room is about to disappear, before it stops and
+	// before its final snapshot is written. Persistence does not go through it -
+	// the room writes its own snapshot - so this is a hook for observers.
 	OnEvict func(name string, doc *crdt.Doc)
 
 	// OnExit removes the room from whatever registry owns it. It must have
@@ -82,6 +94,12 @@ func (c *Config) setDefaults() {
 	if c.AwarenessTTL <= 0 {
 		c.AwarenessTTL = protocol.DefaultTimeout
 	}
+	if c.CompactAfter <= 0 {
+		c.CompactAfter = DefaultCompactAfter
+	}
+	if c.FlushInterval <= 0 {
+		c.FlushInterval = DefaultFlushInterval
+	}
 	if c.Logger == nil {
 		c.Logger = slog.New(slog.NewTextHandler(discard{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	}
@@ -99,8 +117,18 @@ type Room struct {
 	cfg Config
 	log *slog.Logger
 
-	doc *crdt.Doc
-	aw  *protocol.Awareness
+	doc   *crdt.Doc
+	aw    *protocol.Awareness
+	docID store.UUID
+
+	// jobs carries work to the persist goroutine; nil when there is no store.
+	// Only the room goroutine touches it.
+	jobs        chan persistJob
+	persistDone chan struct{}
+	// sinceSnapshot counts updates queued since the last compaction (room
+	// goroutine); watermark is the highest seq written (persist goroutine).
+	sinceSnapshot int
+	watermark     int64
 
 	conns map[Conn]*connState
 
@@ -132,9 +160,14 @@ func New(cfg Config) *Room {
 		log:     cfg.Logger.With("room", cfg.Name),
 		doc:     crdt.NewDoc(cfg.ServerClientID),
 		aw:      protocol.NewAwareness(),
+		docID:   store.DocumentID(cfg.Name),
 		conns:   make(map[Conn]*connState),
 		mailbox: make(chan command, cfg.Mailbox),
 		done:    make(chan struct{}),
+	}
+	if cfg.Store != nil {
+		r.jobs = make(chan persistJob, persistQueue)
+		r.persistDone = make(chan struct{})
 	}
 	r.lastEmpty = cfg.Now()
 	return r
@@ -198,6 +231,21 @@ func (r *Room) send(c command) error {
 // Run is the room's goroutine. It returns when the room evicts itself or ctx is
 // cancelled.
 func (r *Room) Run(ctx context.Context) {
+	if r.cfg.Store != nil {
+		if err := r.load(ctx); err != nil {
+			// Serving an empty document under a name that has content would let
+			// clients merge their state into a blank one and write it back. A
+			// closed connection is recoverable; that is not.
+			r.log.Error("could not load document", "err", err)
+			r.jobs = nil
+			close(r.persistDone)
+			r.stop(CloseInternalError, "could not load document")
+			return
+		}
+		jobs := r.jobs
+		go r.persist(jobs)
+	}
+
 	ticker := time.NewTicker(r.cfg.Tick)
 	defer ticker.Stop()
 	for {
@@ -341,6 +389,7 @@ func (r *Room) update(conn Conn, update []byte) {
 		r.drop(conn, CloseProtocolError, "bad update")
 		return
 	}
+	r.record(update)
 	// Relay the sender's bytes rather than re-encoding the document's delta.
 	// Peers then receive exactly what the author produced, and updates for
 	// structs we are still missing propagate instead of being stuck behind our
@@ -452,6 +501,9 @@ func (r *Room) stop(code int, reason string) {
 	if r.cfg.OnExit != nil {
 		r.cfg.OnExit(r.cfg.Name)
 	}
+	// Persist before signalling that we are gone, so a caller that waits for
+	// the room knows the document is on disk.
+	r.finishPersisting()
 	close(r.done)
 	r.sendMu.Lock()
 	r.closed = true
@@ -460,7 +512,11 @@ func (r *Room) stop(code int, reason string) {
 		select {
 		case c := <-r.mailbox:
 			if j, ok := c.(joinCmd); ok {
-				j.conn.Close(CloseGoingAway, reason)
+				// Same code the connected clients got: a joiner that arrived
+				// during the handover deserves the same explanation, not a
+				// generic "going away" when the real reason was that the
+				// document could not be loaded.
+				j.conn.Close(code, reason)
 			}
 		default:
 			return

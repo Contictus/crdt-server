@@ -138,7 +138,7 @@ func TestPropertyRoomFanoutConverges(t *testing.T) {
 								return false, err
 							}
 						}
-						for _, frame := range c.sent {
+						for _, frame := range c.frames() {
 							msg, err := protocol.Decode(frame)
 							if err != nil {
 								return false, err

@@ -9,6 +9,9 @@ const (
 	// CloseProtocolError (1002) - the connection sent something we cannot
 	// decode or a document update that does not apply.
 	CloseProtocolError = 1002
+	// CloseInternalError (1011) - the server could not serve this document, for
+	// example because loading it from the database failed.
+	CloseInternalError = 1011
 	// ClosePolicyViolation (1008) - the connection could not keep up. Per the
 	// brief this is the backpressure policy: drop the slow client and let it
 	// reconnect, rather than growing a buffer on its behalf. Recovery costs one

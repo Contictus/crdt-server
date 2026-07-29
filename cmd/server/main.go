@@ -23,6 +23,7 @@ import (
 
 	"github.com/mesutokul/ycollab/internal/gateway"
 	"github.com/mesutokul/ycollab/internal/room"
+	"github.com/mesutokul/ycollab/internal/store"
 )
 
 func main() {
@@ -41,6 +42,10 @@ func run() error {
 		maxRooms     = flag.Int("max-rooms", 0, "cap on resident rooms; 0 means unlimited")
 		shutdown     = flag.Duration("shutdown-timeout", 10*time.Second, "how long to wait for connections to drain")
 		logLevel     = flag.String("log-level", envOr("YCOLLAB_LOG_LEVEL", "info"), "debug, info, warn or error")
+
+		databaseURL   = flag.String("database-url", os.Getenv("YCOLLAB_DATABASE_URL"), "PostgreSQL connection string; empty keeps documents in memory only")
+		compactAfter  = flag.Int("compact-after", room.DefaultCompactAfter, "fold the update log into a snapshot after this many updates")
+		flushInterval = flag.Duration("flush-interval", room.DefaultFlushInterval, "how long an update may sit in memory before it is written")
 	)
 	flag.Parse()
 
@@ -56,12 +61,33 @@ func run() error {
 	roomCtx, stopRooms := context.WithCancel(context.Background())
 	defer stopRooms()
 
+	var persistence room.Persistence
+	if *databaseURL != "" {
+		db, err := store.Open(context.Background(), *databaseURL)
+		if err != nil {
+			return err
+		}
+		defer db.Close()
+		if err := db.Migrate(context.Background()); err != nil {
+			return err
+		}
+		persistence = db
+		log.Info("persisting documents", "compact_after", *compactAfter)
+	} else {
+		// Worth saying out loud: without a database this process is the only
+		// copy of every document it is serving.
+		log.Warn("no -database-url: documents live only as long as their room")
+	}
+
 	manager := room.NewManager(roomCtx, room.ManagerConfig{
 		MaxRooms: *maxRooms,
 		Room: room.Config{
-			IdleTimeout:  *idleTimeout,
-			AwarenessTTL: *awarenessTTL,
-			Logger:       log,
+			IdleTimeout:   *idleTimeout,
+			AwarenessTTL:  *awarenessTTL,
+			Store:         persistence,
+			CompactAfter:  *compactAfter,
+			FlushInterval: *flushInterval,
+			Logger:        log,
 		},
 	})
 
