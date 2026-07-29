@@ -129,12 +129,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log := h.log.With("room", name, "conn", c.id)
-	go h.writePump(ctx, c, log)
+	go h.writePump(c, log)
 	h.readPump(ctx, c, rm, log)
 
 	// One Leave per connection, whatever ended it.
 	_ = rm.Leave(c)
 	c.Close(int(websocket.StatusNormalClosure), "")
+	// Wait for the close frame to go out before the handler returns and the
+	// hijacked socket is torn down under the write pump.
+	<-c.finished
 }
 
 func (h *Handler) reject(ctx context.Context, ws *websocket.Conn, cause error) {
@@ -177,16 +180,29 @@ func (h *Handler) readPump(ctx context.Context, c *conn, rm *room.Room, log *slo
 
 // writePump owns the socket for writing: every frame, every ping and the close
 // handshake go through here, so there is never more than one writer.
-func (h *Handler) writePump(ctx context.Context, c *conn, log *slog.Logger) {
+//
+// It deliberately does not watch the request context. That context is cancelled
+// as part of closing the connection, and a write pump that raced it would
+// abandon the socket before the close frame went out - leaving the peer with an
+// abrupt disconnect instead of the reason it was disconnected for. The pump
+// ends when c.done says so, and its writes are bounded by their own timeouts.
+func (h *Handler) writePump(c *conn, log *slog.Logger) {
+	defer close(c.finished)
+	defer func() {
+		// The close frame goes out first; only then is the reader unblocked.
+		// The other order loses the close code: cancelling a read context makes
+		// coder/websocket drop the connection there and then.
+		code, reason := c.closeStatus()
+		_ = c.ws.Close(code, truncateReason(reason))
+		c.cancel()
+	}()
+
+	ctx := context.Background()
 	ticker := time.NewTicker(h.cfg.PingInterval)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
-			return
 		case <-c.done:
-			code, reason := c.closeStatus()
-			_ = c.ws.Close(code, truncateReason(reason))
 			return
 		case frame := <-c.out:
 			if err := h.write(ctx, c, frame); err != nil {

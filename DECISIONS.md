@@ -248,6 +248,17 @@ An idle room stops after five minutes and the document is dropped. `OnEvict` is 
 fills with a snapshot write. Rejected: introducing a `Store` interface with a no-op
 implementation now, which would be a guess at Phase 3's shape dressed up as a design.
 
+### D33. The close frame goes out before the reader is unblocked
+Found by running the gateway tests under `-race`, which turned an occasional flake into a
+consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an
+abrupt disconnect with no code. Cause: closing a connection cancelled the read context, and
+`coder/websocket` tears a connection down immediately when its read context is cancelled - so
+the write pump lost the race to send the close frame. The write pump now owns the whole
+sequence: write the close frame, then cancel the reader, then signal the handler, which waits
+before returning so the hijacked socket is not torn down underneath it. Without this the close
+code is decorative, and the backpressure policy (D29) depends on the client being told why it
+was disconnected.
+
 ### D32. The Go directive moved to 1.23
 `github.com/coder/websocket` requires it. The brief asks for Go 1.22+, so this is inside the
 constraint; noting it because it was a side effect of `go get`, not a decision made on purpose.

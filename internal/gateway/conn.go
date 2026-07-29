@@ -26,7 +26,12 @@ type conn struct {
 
 	closeOnce sync.Once
 	done      chan struct{}
-	// cancel unblocks the read pump, which is otherwise parked in ws.Read.
+	// finished is closed by the write pump once it has written the close frame.
+	finished chan struct{}
+	// cancel unblocks the read pump, which is otherwise parked in ws.Read. Only
+	// the write pump calls it, and only after the close frame is out: cancelling
+	// a read context tears the connection down immediately in coder/websocket,
+	// which would replace our close code with an abrupt disconnect.
 	cancel context.CancelFunc
 
 	mu     sync.Mutex
@@ -39,12 +44,13 @@ func newConn(id uint64, ws *websocket.Conn, buffer int, cancel context.CancelFun
 		buffer = DefaultOutBuffer
 	}
 	return &conn{
-		id:     id,
-		ws:     ws,
-		out:    make(chan []byte, buffer),
-		done:   make(chan struct{}),
-		cancel: cancel,
-		code:   websocket.StatusNormalClosure,
+		id:       id,
+		ws:       ws,
+		out:      make(chan []byte, buffer),
+		done:     make(chan struct{}),
+		finished: make(chan struct{}),
+		cancel:   cancel,
+		code:     websocket.StatusNormalClosure,
 	}
 }
 
@@ -65,16 +71,16 @@ func (c *conn) Send(frame []byte) bool {
 	}
 }
 
-// Close records why the connection is going away and wakes both pumps. The
-// close frame itself is written by the write pump, so no two goroutines ever
-// write to the socket.
+// Close records why the connection is going away and wakes the write pump. The
+// close frame itself is written there, so no two goroutines ever write to the
+// socket - and so the peer learns *why* it was disconnected, which is the whole
+// point of using close codes to express policy.
 func (c *conn) Close(code int, reason string) {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		c.code, c.reason = websocket.StatusCode(code), reason
 		c.mu.Unlock()
 		close(c.done)
-		c.cancel()
 	})
 }
 
