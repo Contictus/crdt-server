@@ -1,0 +1,12 @@
+{
+  "name": "ycollab-soak",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Drives real y-websocket clients against a running ycollab server and checks that they converge",
+  "type": "module",
+  "scripts": {
+    "soak": "node soak.mjs --clients 6 --duration 300",
+    "short": "node soak.mjs --clients 4 --duration 10"
+  },
+  "comment": "No dependencies on purpose: yjs and y-websocket are imported from tools/fixturegen so the clients are the exact versions the fixtures were generated with."
+}
