@@ -82,16 +82,19 @@ func TestAppendAndLoadPreservesOrder(t *testing.T) {
 	}
 
 	want := [][]byte{[]byte("one"), []byte("two"), []byte("three")}
-	last, err := s.Append(c, id, want[:2])
+	first, err := s.Append(c, id, want[:2])
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	next, err := s.Append(c, id, want[2:])
+	if len(first) != 2 {
+		t.Fatalf("got %d seqs for 2 payloads", len(first))
+	}
+	second, err := s.Append(c, id, want[2:])
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if next <= last {
-		t.Fatalf("seq did not advance: %d then %d", last, next)
+	if second[0] <= first[1] {
+		t.Fatalf("seq did not advance: %v then %v", first, second)
 	}
 
 	doc, err := s.Load(c, id)
@@ -106,8 +109,16 @@ func TestAppendAndLoadPreservesOrder(t *testing.T) {
 			t.Fatalf("update %d is %q, want %q", i, doc.Updates[i], want[i])
 		}
 	}
-	if doc.LastSeq != next {
-		t.Fatalf("LastSeq %d, want %d", doc.LastSeq, next)
+	if doc.LastSeq != second[0] {
+		t.Fatalf("LastSeq %d, want %d", doc.LastSeq, second[0])
+	}
+	// The seqs come back with the payloads, so a caller that folds them into a
+	// snapshot can say exactly which rows it covered.
+	if len(doc.Seqs) != len(doc.Updates) {
+		t.Fatalf("%d seqs for %d updates", len(doc.Seqs), len(doc.Updates))
+	}
+	if doc.Seqs[0] != first[0] || doc.Seqs[2] != second[0] {
+		t.Fatalf("seqs %v, want to start with %v and end with %v", doc.Seqs, first, second)
 	}
 }
 
@@ -119,11 +130,11 @@ func TestCompactFoldsTheLog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	watermark, err := s.Append(c, id, [][]byte{[]byte("a"), []byte("b"), []byte("c")})
+	folded, err := s.Append(c, id, [][]byte{[]byte("a"), []byte("b"), []byte("c")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(c, id, []byte("snapshot-1"), watermark); err != nil {
+	if err := s.Compact(c, id, []byte("snapshot-1"), folded); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
@@ -134,8 +145,8 @@ func TestCompactFoldsTheLog(t *testing.T) {
 	if !bytes.Equal(doc.Snapshot, []byte("snapshot-1")) {
 		t.Fatalf("snapshot %q", doc.Snapshot)
 	}
-	if doc.SnapshotSeq != watermark {
-		t.Fatalf("snapshot_seq %d, want %d", doc.SnapshotSeq, watermark)
+	if doc.SnapshotSeq != folded[len(folded)-1] {
+		t.Fatalf("snapshot_seq %d, want %d", doc.SnapshotSeq, folded[len(folded)-1])
 	}
 	if len(doc.Updates) != 0 {
 		t.Fatalf("compaction left %d rows behind", len(doc.Updates))
@@ -153,14 +164,14 @@ func TestCompactKeepsUpdatesAboveTheWatermark(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	watermark, err := s.Append(c, id, [][]byte{[]byte("folded")})
+	folded, err := s.Append(c, id, [][]byte{[]byte("folded")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Append(c, id, [][]byte{[]byte("in flight")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Compact(c, id, []byte("snapshot"), watermark); err != nil {
+	if err := s.Compact(c, id, []byte("snapshot"), folded); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 
@@ -192,7 +203,7 @@ func TestCompactRefusesToGoBackwards(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := s.Compact(c, id, []byte("newer"), second); err != nil {
+	if err := s.Compact(c, id, []byte("newer"), append(first, second...)); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
 	err = s.Compact(c, id, []byte("older"), first)
@@ -207,7 +218,7 @@ func TestCompactRefusesToGoBackwards(t *testing.T) {
 	if !bytes.Equal(doc.Snapshot, []byte("newer")) {
 		t.Fatalf("the losing snapshot won: %q", doc.Snapshot)
 	}
-	if doc.SnapshotSeq != second {
+	if doc.SnapshotSeq != second[0] {
 		t.Fatalf("snapshot_seq went backwards: %d", doc.SnapshotSeq)
 	}
 }
@@ -222,13 +233,13 @@ func TestCompactIsAtomicForReaders(t *testing.T) {
 	if _, err := s.Load(c, id); err != nil {
 		t.Fatal(err)
 	}
-	watermark, err := s.Append(c, id, [][]byte{[]byte("a"), []byte("b")})
+	folded, err := s.Append(c, id, [][]byte{[]byte("a"), []byte("b")})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- s.Compact(c, id, []byte("snapshot"), watermark) }()
+	go func() { done <- s.Compact(c, id, []byte("snapshot"), folded) }()
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -251,6 +262,71 @@ func TestCompactIsAtomicForReaders(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatalf("compact: %v", err)
+	}
+}
+
+// C6: identity values are handed out before commit, so a row with a lower seq
+// can become visible after one with a higher seq. Compaction must therefore
+// delete the rows it actually folded in, not everything below a watermark - a
+// range delete would take the late row with it and lose the update.
+func TestCompactOnlyDeletesTheRowsItFolded(t *testing.T) {
+	s := testStore(t)
+	c := ctx(t)
+	id := testDoc(t)
+	if _, err := s.Load(c, id); err != nil {
+		t.Fatal(err)
+	}
+
+	early, err := s.Append(c, id, [][]byte{[]byte("early")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	late, err := s.Append(c, id, [][]byte{[]byte("late")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The snapshot covers only the later row, standing in for a row that was
+	// still invisible when the snapshot was taken but has a lower seq.
+	if err := s.Compact(c, id, []byte("snapshot"), late); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+
+	doc, err := s.Load(c, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Updates) != 1 || !bytes.Equal(doc.Updates[0], []byte("early")) {
+		t.Fatalf("the row below the watermark was deleted: remaining %q", doc.Updates)
+	}
+	if doc.Seqs[0] != early[0] {
+		t.Fatalf("remaining seq %d, want %d", doc.Seqs[0], early[0])
+	}
+	// And it is still loaded, because Load does not filter on snapshot_seq.
+	if doc.SnapshotSeq <= early[0] {
+		t.Fatalf("this test proves nothing unless snapshot_seq (%d) is above the surviving row (%d)",
+			doc.SnapshotSeq, early[0])
+	}
+}
+
+// Compacting with nothing to fold is a no-op rather than a snapshot that
+// deletes nothing: an evicted room that never saw an edit has nothing to say.
+func TestCompactWithNothingFoldedIsANoOp(t *testing.T) {
+	s := testStore(t)
+	c := ctx(t)
+	id := testDoc(t)
+	if _, err := s.Load(c, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Compact(c, id, []byte("snapshot"), nil); err != nil {
+		t.Fatalf("compact: %v", err)
+	}
+	doc, err := s.Load(c, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.Snapshot != nil {
+		t.Fatalf("wrote a snapshot for an empty compaction: %q", doc.Snapshot)
 	}
 }
 

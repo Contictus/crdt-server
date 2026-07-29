@@ -265,15 +265,16 @@ Compaction deletes exactly the rows it folded in, so anything still in the table
 folded in, and if a row is ever re-applied redundantly it costs nothing, because updates are
 idempotent. This is the cheap half of the fix for [C6]; the expensive half is not needed yet.
 
-### D36. The room encodes snapshots, the writer picks the watermark
+### D36. The room encodes snapshots, the writer names the rows they cover
 Compaction needs two things that live in different goroutines: the document, which only the
-room may touch, and the highest log position actually written, which only the writer knows. So
-the room encodes the snapshot and hands it over, and the writer flushes what it has queued and
-compacts at its own last seq. The snapshot can cover more than the watermark does; the extra
-rows survive and are applied again on the next load. Rejected: having the writer ask the room
-for a snapshot (a round trip in the other direction, and the room would still have to encode
-it), and letting the room guess the watermark (it would guess high, and deletion would take
-rows that were never written).
+room may touch, and the set of log rows actually written, which only the writer knows. So the
+room encodes the snapshot and hands it over, and the writer flushes what it has queued and
+compacts against the seqs it has accumulated (see [D41]). The snapshot can cover more than
+those rows do; the extra updates survive in the log and are applied again on the next load,
+which is free. Rejected: having the writer ask the room for a snapshot (a round trip in the
+other direction, and the room would still have to encode it), and letting the room decide which
+rows are covered (it would have to guess, and a wrong guess deletes rows that were never
+written).
 
 ### D37. Writes are asynchronous, and the durability window is the flush interval
 The room hands updates to a per-room writer goroutine and carries on. A crash therefore loses
@@ -297,6 +298,34 @@ Now that a room can write itself out, hitting the cap should cost a snapshot, no
 the least recently used *idle* room is evicted to make space. A room with somebody connected is
 never evicted - freeing memory by disconnecting people who are editing is not a trade the
 registry may make - so the cap can still be reached, and then the join is refused.
+
+### D42. ContentJSON is tested against hand-built bytes
+Ref 2 is the one content type with no fixture: current `yjs` writes `ContentAny` for everything
+the public API can produce, so the generator cannot emit one. Documents written by older
+versions still contain it. The test therefore builds the update by hand from `ContentJSON.js`,
+and the bytes were checked against real Yjs once: it reads the five values - including the
+`undefined` that is not valid JSON - and re-encodes them byte for byte identically to what we
+wrote. Rejected: leaving the branch untested because no fixture exists, which is how an
+unreachable-looking decoder path turns into corruption the first time a real old document
+arrives.
+
+### D40. Pending deletions are advertised, unlike in Yjs
+`EncodeStateAsUpdate` includes the deletions being held for structs we have not received, which
+`Y.encodeStateAsUpdate` does not (it omits `pendingDs`). A peer that cannot resolve the range
+holds it pending exactly as we do; a peer that can resolve it applies a deletion it was going to
+receive anyway. The gain is that two replicas which have exchanged everything now agree, instead
+of the deletion trailing its structs by one exchange, and that a pending deletion survives being
+written into a snapshot. Rejected: matching Yjs exactly, which is the default position in this
+project — but here the divergence is invisible on the wire (the delete set is a delete set
+either way) and removes a real class of transient disagreement. Resolves [C5].
+
+### D41. Compaction deletes rows by identity, not by range
+`DELETE ... WHERE seq = ANY($folded)` rather than `seq <= watermark`. Identity values are handed
+out before commit, so a range can take a row that the snapshot never saw. The room's writer
+therefore accumulates the seqs it has written, hands them over with the snapshot, and clears
+them once the transaction lands. Rejected: keeping the range and taking a heavier lock on the
+append path, which would put contention on the hot path to protect an operation that runs once
+per 500 updates. Resolves [C6].
 
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
@@ -662,17 +691,40 @@ each replica publishes its state vector for active rooms every N seconds, and pe
 `Y.diffUpdate` against it. Same code path as `SyncStep1`/`SyncStep2`, bounded cost, self-healing.
 Decision deferred to Phase 4; flagging now because it affects the fanout message schema.
 
-### C5. A pending deletion is invisible to peers until its structs arrive
+### C5. A pending deletion is invisible to peers until its structs arrive — resolved
 Found by the convergence property test, not by reading the source. If replica A receives a
-delete for structs it has not seen, the deletion sits in `pendingDeletes` and does **not**
-appear in `DeleteSet()`, so a peer syncing with A at that moment learns the structs but not
-that they are deleted. It heals on the next exchange after the structs arrive — but only if
-another exchange happens. Consequences: (a) one round of anti-entropy is not a convergence
-guarantee, so the Phase 4 mechanism must keep running rather than fire once per reconnect;
-(b) the property test loops the exchange until it stabilises rather than asserting convergence
-after a fixed two rounds. Yjs has exactly the same behaviour (`pendingDs`), so this is not a
-divergence from the reference implementation — it is a property of the protocol that the
-fanout design has to respect. Related to [C1].
+delete for structs it has not seen, the deletion sits in `pendingDeletes`, and Yjs leaves its
+`pendingDs` out of what it sends — so a peer syncing with A learns the structs but not that they
+are deleted, and the deletion arrives one exchange behind them.
+
+Resolved by including pending deletions in what we send ([D40]). A peer that cannot resolve the
+range holds it pending exactly as we do, and a peer that can resolve it applies a deletion it
+was going to receive anyway, so the change costs nothing and removes a case where two replicas
+that have exchanged everything still disagree. It also stops a pending deletion being dropped
+when a room writes its snapshot and restarts.
+
+What remains is a different and more fundamental thing, now stated separately as [C7]: a diff
+is computed against a state vector, so it cannot carry structs that were never integrated. That
+is why the convergence property still exchanges to a fixpoint rather than asserting a fixed
+number of rounds, and why Phase 4's anti-entropy has to keep running rather than fire once per
+reconnect. Related to [C1].
+
+### C7. A diff cannot carry structs a replica has not integrated
+`EncodeStateAsUpdate` walks the struct store, so structs held in `pending` — those whose
+dependencies have not arrived — are not in the diff at all. Two replicas each holding a
+different link of the same chain therefore need one exchange per link before they agree. The
+convergence property measures this directly: it exchanges until the two replicas stop changing,
+with the number of updates as the bound, and 1000 random splits per scenario stay inside it.
+
+Consequences: anti-entropy must run periodically rather than once (which [C1] needs anyway),
+and no single round trip can be treated as "synced" for the purpose of, say, dropping a
+document from memory.
+
+The fix, if single-round convergence is ever wanted: encode pending structs too, bridging the
+gaps with `Skip` structs (ref 10), which is exactly what `Y.mergeUpdates` does and which our
+decoder already reads. Deliberately not done now — it is surgery on the Phase 1 core to remove
+a round trip from a path that heals itself, and Yjs has the same behaviour, so no client is
+surprised by it.
 
 ### C2. Compaction can race across replicas — resolved in Phase 3
 Any replica may compact any document (section 3, no ownership). Two replicas compacting
@@ -692,22 +744,18 @@ removal is broadcast. A connection that closes cleanly has its states retracted 
 rather than 30 s later. The removal goes out at the client's own clock, not `clock + 1`, for
 the reason in [D30].
 
-### C6. Identity columns can commit out of order
+### C6. Identity columns can commit out of order — resolved
 `seq` is `GENERATED ALWAYS AS IDENTITY`, so values are handed out before commit and a row with
-a lower seq can become visible after one with a higher seq. Two consequences, one handled and
-one not:
+a lower seq can become visible after one with a higher seq. Two consequences, both now handled:
 
-Handled: loading reads the whole remaining log rather than `seq > snapshot_seq` ([D35]), so a
+Loading reads the whole remaining log rather than `seq > snapshot_seq` ([D35]), so a
 late-committing row is still applied.
 
-Not handled: compaction deletes `seq <= watermark`. A row below the watermark that commits
-after the delete ran survives in the table (the delete has already happened) and is picked up
-by the next load - so nothing is lost today. But it *would* be lost if compaction ever ran
-again with a higher watermark before that row was folded in, and the window widens as soon as
-two replicas append to the same document, which is Phase 4. The fix, when it is needed: have
-compaction delete exactly the seqs it observed (`seq = ANY($1)`) instead of a range. Recorded
-now because the schema and the delete are cheap to change today and awkward to change later.
-Related to [C2].
+Compaction deletes exactly the rows its snapshot folded in, by seq (`seq = ANY($1)`), instead
+of everything at or below a watermark ([D41]). A range delete would take a row the snapshot
+never saw. That mattered little on one node and would have mattered a great deal at Phase 4,
+where two replicas append to the same document; fixing it while the code was still small cost
+an array instead of an integer.
 
 ### C4. Section 8 vs. TipTap
 Resolved in D8, kept here as a pointer: section 8's "no `YXmlFragment`" and Phase 2's "TipTap

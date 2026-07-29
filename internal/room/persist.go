@@ -13,8 +13,8 @@ import (
 // real thing.
 type Persistence interface {
 	Load(ctx context.Context, id store.UUID) (*store.Document, error)
-	Append(ctx context.Context, id store.UUID, payloads [][]byte) (int64, error)
-	Compact(ctx context.Context, id store.UUID, snapshot []byte, watermark int64) error
+	Append(ctx context.Context, id store.UUID, payloads [][]byte) ([]int64, error)
+	Compact(ctx context.Context, id store.UUID, snapshot []byte, folded []int64) error
 }
 
 const (
@@ -62,10 +62,11 @@ func (r *Room) load(ctx context.Context) error {
 		}
 	}
 	r.sinceSnapshot = len(doc.Updates)
-	// Start from where the log actually is. Without this a room that loads and
-	// then evicts without anyone editing would try to compact at watermark 0,
-	// be told its snapshot is stale, and leave the log unconsolidated forever.
-	r.watermark = doc.LastSeq
+	// The rows just folded into the document are the first thing a new snapshot
+	// would cover, so the writer starts holding them. Without this a room that
+	// loads and then evicts would write a snapshot that deletes nothing, and
+	// the log would never be consolidated.
+	r.folded = append(r.folded, doc.Seqs...)
 	r.log.Info("loaded document",
 		"snapshot", len(doc.Snapshot), "updates", len(doc.Updates), "pending", r.doc.PendingCount())
 	return nil
@@ -96,11 +97,11 @@ func (r *Room) record(update []byte) {
 
 // requestCompaction encodes the document and hands it to the writer.
 //
-// The room does the encoding because it owns the document; the writer decides
-// the watermark, because it is the only thing that knows which log rows have
-// actually been written. The snapshot can legitimately contain more than the
-// watermark covers - the extra updates are still in the log and will simply be
-// applied again on the next load, which costs nothing.
+// The room does the encoding because it owns the document; the writer names the
+// rows, because it is the only thing that knows which of them have actually
+// been written. The snapshot can legitimately contain more than those rows - the
+// extra updates stay in the log and are applied again on the next load, which
+// costs nothing.
 func (r *Room) requestCompaction() {
 	if r.jobs == nil {
 		return
@@ -132,14 +133,14 @@ func (r *Room) persist(jobs <-chan persistJob) {
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
-		seq, err := r.cfg.Store.Append(ctx, r.docID, batch)
+		seqs, err := r.cfg.Store.Append(ctx, r.docID, batch)
 		cancel()
 		if err != nil {
 			// The updates stay in memory and in every connected client. Say so
 			// loudly rather than pretending the write happened.
 			r.log.Error("could not write updates", "count", len(batch), "err", err)
-		} else if seq > r.watermark {
-			r.watermark = seq
+		} else {
+			r.folded = append(r.folded, seqs...)
 		}
 		batch = batch[:0]
 	}
@@ -172,17 +173,25 @@ func (r *Room) persist(jobs <-chan persistJob) {
 }
 
 func (r *Room) compact(snapshot []byte) {
+	if len(r.folded) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 	defer cancel()
-	err := r.cfg.Store.Compact(ctx, r.docID, snapshot, r.watermark)
+	err := r.cfg.Store.Compact(ctx, r.docID, snapshot, r.folded)
 	switch {
 	case err == nil:
-		r.log.Info("compacted", "watermark", r.watermark, "snapshot", len(snapshot))
+		r.log.Info("compacted", "rows", len(r.folded), "snapshot", len(snapshot))
+		// Those rows are gone; a later snapshot must not try to delete them
+		// again, and must not claim to cover them.
+		r.folded = r.folded[:0]
 	case errors.Is(err, store.ErrStaleSnapshot):
-		// Another replica got there first with a newer snapshot. Nothing to do:
-		// theirs contains everything ours does.
+		// Another replica got there first with a newer snapshot, which contains
+		// everything ours does. Our rows are covered by theirs, so drop them.
 		r.log.Info("skipped compaction, a newer snapshot exists")
+		r.folded = r.folded[:0]
 	default:
+		// Keep the rows: the next compaction should still cover them.
 		r.log.Error("could not compact", "err", err)
 	}
 }

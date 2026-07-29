@@ -526,12 +526,34 @@ func (d *Doc) DeleteSet() *DeleteSet {
 	return ds
 }
 
+// deleteSetForUpdate is what peers are told has been deleted: everything the
+// store knows about, plus the deletions being held for structs we have not
+// received yet.
+//
+// Yjs does not include its pendingDs here, and that is the behaviour DECISIONS
+// C5 describes: a deletion whose structs a replica has not seen stays invisible
+// to that replica's peers, so it travels one exchange behind the structs it
+// refers to. Including it costs nothing - a peer that cannot resolve the range
+// holds it pending exactly as we do, and a peer that can resolve it applies a
+// deletion it was going to receive anyway - and it removes a case where two
+// replicas that have exchanged everything still disagree. It also means a
+// pending deletion survives a snapshot instead of being dropped on restart.
+func (d *Doc) deleteSetForUpdate() *DeleteSet {
+	ds := d.DeleteSet()
+	for client, ranges := range d.pendingDeletes.Clients {
+		for _, r := range ranges {
+			ds.Add(client, r.Clock, r.Len)
+		}
+	}
+	return ds
+}
+
 // EncodeStateAsUpdate returns everything the holder of sv is missing. A nil sv
 // means "everything".
 //
 // Mirrors writeClientsStructs + writeDeleteSet (yjs/src/utils/encoding.js:81).
 func (d *Doc) EncodeStateAsUpdate(sv StateVector) ([]byte, error) {
-	u := &Update{Deletes: d.DeleteSet()}
+	u := &Update{Deletes: d.deleteSetForUpdate()}
 	for _, client := range d.store.Clients() {
 		structs := d.store.clients[client]
 		if len(structs) == 0 {

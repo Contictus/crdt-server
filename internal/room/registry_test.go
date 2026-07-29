@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/mesutokul/ycollab/internal/protocol"
 )
 
 func TestManagerReusesRoomsPerName(t *testing.T) {
@@ -73,6 +75,11 @@ func TestManagerEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 	// doc-1 is now idle and least recently used; doc-2 still has a connection.
 	if _, err := m.Join("doc-1", oldest); err != nil {
+		t.Fatal(err)
+	}
+	// Give it something worth writing: an eviction with nothing to fold is a
+	// no-op, which is what makes the snapshot assertion below meaningful.
+	if err := m.rooms["doc-1"].Deliver(oldest, protocol.WriteUpdate(readFixture(t, "text-insert-single", "state.bin"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.rooms["doc-1"].Leave(oldest); err != nil {

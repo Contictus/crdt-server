@@ -126,9 +126,10 @@ type Room struct {
 	jobs        chan persistJob
 	persistDone chan struct{}
 	// sinceSnapshot counts updates queued since the last compaction (room
-	// goroutine); watermark is the highest seq written (persist goroutine).
+	// goroutine); folded holds the log rows the next snapshot will cover
+	// (persist goroutine).
 	sinceSnapshot int
-	watermark     int64
+	folded        []int64
 
 	conns map[Conn]*connState
 

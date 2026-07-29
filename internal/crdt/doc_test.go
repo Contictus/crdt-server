@@ -424,3 +424,76 @@ func TestUTF16LengthsSurviveIntegration(t *testing.T) {
 	checkStateVector(t, "varint-boundaries", doc, exp)
 	_ = math.MaxInt32
 }
+
+// C5: a deletion for structs we have not received is held pending, and Yjs
+// leaves it out of what it sends, so it reaches peers one exchange behind the
+// structs it refers to. We include it instead.
+//
+// The test drives the case directly: apply only the update that carries the
+// deletion, so its structs are unknown and the deletion is pending, then check
+// that what we would send a peer still describes it.
+func TestPendingDeletesAreAdvertised(t *testing.T) {
+	dir := filepath.Join(filepath.FromSlash(fixturesDir), "text-delete")
+	updates := scenarioUpdates(t, dir)
+
+	// Find an update whose delete set refers to structs it does not carry.
+	var carrier []byte
+	for _, raw := range updates {
+		u, err := crdt.DecodeUpdate(raw)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(u.Deletes.Clients) > 0 && len(u.Clients) == 0 {
+			carrier = raw
+			break
+		}
+	}
+	if carrier == nil {
+		t.Skip("this scenario has no update that deletes without carrying structs")
+	}
+
+	doc := crdt.NewDoc(1)
+	if err := doc.ApplyUpdate(carrier); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(doc.DeleteSet().Clients) != 0 {
+		t.Fatal("the deletion resolved, so this test is not exercising the pending path")
+	}
+
+	encoded, err := doc.EncodeStateAsUpdate(nil)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out, err := crdt.DecodeUpdate(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Deletes.Clients) == 0 {
+		t.Fatal("a pending deletion was dropped on the way out; a peer would never hear about it")
+	}
+
+	// And a peer that does have the structs applies it, rather than waiting for
+	// a later exchange.
+	peer := crdt.NewDoc(2)
+	for _, raw := range updates {
+		u, err := crdt.DecodeUpdate(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(u.Clients) == 0 {
+			continue // skip the deletion itself
+		}
+		if err := peer.ApplyUpdate(raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(peer.DeleteSet().Clients) != 0 {
+		t.Fatal("the peer already knew about the deletion")
+	}
+	if err := peer.ApplyUpdate(encoded); err != nil {
+		t.Fatalf("peer apply: %v", err)
+	}
+	if len(peer.DeleteSet().Clients) == 0 {
+		t.Fatal("the peer did not learn the deletion from what we sent")
+	}
+}

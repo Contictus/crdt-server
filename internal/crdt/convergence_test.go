@@ -233,22 +233,30 @@ func TestPropertyReplicasConvergeAfterExchange(t *testing.T) {
 					}
 				}
 
-				// Exchange until nothing changes. More than two rounds are
-				// sometimes needed: a delete for structs a replica has not
-				// received yet is held pending and is therefore invisible to
-				// its peers until those structs arrive, so the deletion
-				// propagates one round behind the structs it refers to. Yjs
-				// behaves the same way (pendingDs). Phase 4's anti-entropy has
-				// to keep running for this reason - one exchange is not a
-				// guarantee of convergence.
-				const maxRounds = 6
-				for range maxRounds {
-					if fingerprint(t, a) == fingerprint(t, b) {
-						break
+				// Exchange until nothing changes, and count the rounds.
+				//
+				// One round is not enough in general, and no fixed number is. A
+				// diff is computed against a state vector, so it can only carry
+				// structs that were actually integrated: a replica holding
+				// structs whose dependencies it has not seen cannot put them in
+				// the diff at all. Each exchange resolves at least one link of
+				// such a chain, so the number of rounds is bounded by the length
+				// of the chain, which is bounded by the number of updates.
+				//
+				// Deletions used to add a round of their own, for a reason that
+				// was specific to them - see C5 - and no longer do: a deletion
+				// being held for structs we have not received is now part of
+				// what we send.
+				maxRounds := len(updates) + 1
+				rounds := 0
+				for fingerprint(t, a) != fingerprint(t, b) {
+					if rounds == maxRounds {
+						return false, fmt.Errorf("still diverging after %d exchanges", rounds)
 					}
 					if err := exchange(a, b); err != nil {
 						return false, err
 					}
+					rounds++
 				}
 
 				gotA := fingerprint(t, a)

@@ -62,6 +62,10 @@ type Document struct {
 	SnapshotSeq int64
 	// Updates are the remaining log rows in seq order.
 	Updates [][]byte
+	// Seqs are those rows' seq values, positionally matching Updates. A room
+	// that folds these into a new snapshot passes them back to Compact, which
+	// deletes exactly them.
+	Seqs []int64
 	// LastSeq is the highest seq read, or SnapshotSeq if the log was empty.
 	LastSeq int64
 }
@@ -70,11 +74,12 @@ type Document struct {
 // asked for it.
 //
 // Every remaining log row is returned, including any whose seq is below
-// SnapshotSeq. Compaction deletes the rows it folded in, so a row that is still
-// there was not folded in - and if one ever is returned redundantly, applying
-// it again is free, because updates are idempotent. Filtering on
+// SnapshotSeq. Compaction deletes exactly the rows it folded in, so a row that
+// is still there was not folded in - and if one ever is returned redundantly,
+// applying it again is free, because updates are idempotent. Filtering on
 // `seq > snapshot_seq` instead would turn a row that committed out of seq order
-// into silent data loss. See DECISIONS C6.
+// into silent data loss, which is possible because identity values are handed
+// out before commit. See DECISIONS D35.
 func (s *Store) Load(ctx context.Context, id UUID) (*Document, error) {
 	doc := &Document{}
 	tx, err := s.pool.Begin(ctx)
@@ -110,6 +115,7 @@ func (s *Store) Load(ctx context.Context, id UUID) (*Document, error) {
 			return nil, fmt.Errorf("store: scan update: %w", err)
 		}
 		doc.Updates = append(doc.Updates, payload)
+		doc.Seqs = append(doc.Seqs, seq)
 		if seq > doc.LastSeq {
 			doc.LastSeq = seq
 		}
@@ -125,14 +131,17 @@ func (s *Store) Load(ctx context.Context, id UUID) (*Document, error) {
 	return doc, nil
 }
 
-// Append writes updates to the log and returns the highest seq assigned.
+// Append writes updates to the log and returns the seq assigned to each.
 //
 // The payloads go in one statement: an editing session produces a steady drip
 // of small updates, and a round trip each would make the database the thing
 // that decides how fast people can type.
-func (s *Store) Append(ctx context.Context, id UUID, payloads [][]byte) (int64, error) {
+//
+// The caller keeps the seqs so that a later compaction can delete exactly the
+// rows its snapshot covers.
+func (s *Store) Append(ctx context.Context, id UUID, payloads [][]byte) ([]int64, error) {
 	if len(payloads) == 0 {
-		return 0, nil
+		return nil, nil
 	}
 	rows, err := s.pool.Query(ctx,
 		`INSERT INTO doc_updates (doc_id, payload)
@@ -140,40 +149,56 @@ func (s *Store) Append(ctx context.Context, id UUID, payloads [][]byte) (int64, 
 		 RETURNING seq`,
 		id, payloads)
 	if err != nil {
-		return 0, fmt.Errorf("store: append: %w", err)
+		return nil, fmt.Errorf("store: append: %w", err)
 	}
 	defer rows.Close()
-	var last int64
+	seqs := make([]int64, 0, len(payloads))
 	for rows.Next() {
 		var seq int64
 		if err := rows.Scan(&seq); err != nil {
-			return 0, fmt.Errorf("store: append: %w", err)
+			return nil, fmt.Errorf("store: append: %w", err)
 		}
-		if seq > last {
-			last = seq
-		}
+		seqs = append(seqs, seq)
 	}
 	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("store: append: %w", err)
+		return nil, fmt.Errorf("store: append: %w", err)
 	}
-	return last, nil
+	return seqs, nil
 }
 
-// Compact replaces the snapshot and deletes the log rows it covers, in one
-// transaction. watermark is the highest seq the snapshot includes.
+// Compact replaces the snapshot and deletes exactly the log rows it covers, in
+// one transaction. folded lists the seqs the snapshot contains.
 //
-// Two guards, both aimed at the race the brief's design invites - any replica
-// may compact any document, because there is no ownership:
+// The delete names its rows rather than deleting a range. A range would be
+// wrong: seq comes from an identity column, and identity values are handed out
+// before commit, so a row with a lower seq can become visible after one with a
+// higher seq. "seq <= watermark" would then take a row the snapshot never saw.
+// Naming the rows makes the operation correct however the commits interleave,
+// which matters as soon as more than one replica appends to a document.
+//
+// Two further guards, aimed at the race the architecture invites by having no
+// document ownership:
 //
 //   - an advisory lock serialises compaction of one document, so two replicas
 //     cannot interleave their snapshot write and their delete;
-//   - the write only lands if it moves snapshot_seq forward. An older snapshot
-//     overwriting a newer one, and then deleting rows the newer one does not
-//     contain, is silent data loss. That returns ErrStaleSnapshot and changes
-//     nothing.
+//   - the write only lands if it moves snapshot_seq forward, so an older
+//     snapshot cannot overwrite a newer one. That returns ErrStaleSnapshot and
+//     changes nothing.
 //
-// See DECISIONS C2.
-func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, watermark int64) error {
+// See DECISIONS C2 and C6.
+func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []int64) error {
+	if len(folded) == 0 {
+		// Nothing has been written since the last snapshot, so a new one would
+		// say nothing the old one does not.
+		return nil
+	}
+	var watermark int64
+	for _, seq := range folded {
+		if seq > watermark {
+			watermark = seq
+		}
+	}
+
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("store: compact: %w", err)
@@ -196,9 +221,10 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, watermark
 		return ErrStaleSnapshot
 	}
 
-	// Updates that arrive during compaction get higher seq values and survive.
+	// Anything not named here survives, including updates that arrived while
+	// the snapshot was being prepared.
 	if _, err := tx.Exec(ctx,
-		`DELETE FROM doc_updates WHERE doc_id = $1 AND seq <= $2`, id, watermark,
+		`DELETE FROM doc_updates WHERE doc_id = $1 AND seq = ANY($2)`, id, folded,
 	); err != nil {
 		return fmt.Errorf("store: prune log: %w", err)
 	}

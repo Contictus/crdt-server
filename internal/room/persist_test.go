@@ -22,6 +22,7 @@ type fakeStore struct {
 	doc       store.Document
 	appended  [][]byte
 	snapshots [][]byte
+	folded    [][]int64
 	seq       int64
 	loadErr   error
 	appendErr error
@@ -37,23 +38,44 @@ func (f *fakeStore) Load(context.Context, store.UUID) (*store.Document, error) {
 	return &doc, nil
 }
 
-func (f *fakeStore) Append(_ context.Context, _ store.UUID, payloads [][]byte) (int64, error) {
+func (f *fakeStore) Append(_ context.Context, _ store.UUID, payloads [][]byte) ([]int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.appendErr != nil {
-		return 0, f.appendErr
+		return nil, f.appendErr
+	}
+	seqs := make([]int64, 0, len(payloads))
+	for range payloads {
+		f.seq++
+		seqs = append(seqs, f.seq)
 	}
 	f.appended = append(f.appended, payloads...)
-	f.seq += int64(len(payloads))
-	return f.seq, nil
+	return seqs, nil
 }
 
-func (f *fakeStore) Compact(_ context.Context, _ store.UUID, snapshot []byte, watermark int64) error {
+func (f *fakeStore) Compact(_ context.Context, _ store.UUID, snapshot []byte, folded []int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.snapshots = append(f.snapshots, snapshot)
+	f.folded = append(f.folded, folded)
+	var watermark int64
+	for _, seq := range folded {
+		if seq > watermark {
+			watermark = seq
+		}
+	}
 	f.doc = store.Document{Snapshot: snapshot, SnapshotSeq: watermark}
 	return nil
+}
+
+// lastFolded returns the rows the most recent snapshot claimed to cover.
+func (f *fakeStore) lastFolded() []int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.folded) == 0 {
+		return nil
+	}
+	return f.folded[len(f.folded)-1]
 }
 
 func (f *fakeStore) counts() (appended, snapshots int) {
@@ -171,6 +193,11 @@ func TestCompactionAfterThreshold(t *testing.T) {
 	if got, want := docPrint(t, restored), docPrint(t, reference); got != want {
 		t.Fatalf("snapshot is not the document\n got %s\nwant %s", got, want)
 	}
+	// The snapshot has to name the rows it covers, or compaction would delete a
+	// range and take rows it never saw with it (C6).
+	if got := fake.lastFolded(); len(got) != 6 {
+		t.Fatalf("snapshot covers %v, want the 6 rows that were written", got)
+	}
 }
 
 // Persist-on-evict: an idle room writes a final snapshot before it disappears,
@@ -228,10 +255,15 @@ func TestRoomLoadsWhatWasPersisted(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	seqs := make([]int64, len(updates)-1)
+	for i := range seqs {
+		seqs[i] = int64(i + 2)
+	}
 	fake := &fakeStore{doc: store.Document{
 		Snapshot:    updates[0],
 		SnapshotSeq: 1,
 		Updates:     updates[1:],
+		Seqs:        seqs,
 		LastSeq:     int64(len(updates)),
 	}}
 	r := runRoom(t, Config{Store: fake, FlushInterval: 5 * time.Millisecond})
