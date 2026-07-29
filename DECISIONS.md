@@ -145,6 +145,35 @@ ask for a 2^31-element array. Go caps nesting at 128 (`ErrDepthExceeded`) and re
 length prefix larger than the remaining input before allocating. Yjs has no such limits;
 this only rejects input no real client produces.
 
+### D18. Encoding canonicalises client order; decoding accepts any order
+Yjs writes client blocks, delete-set clients and state-vector clients descending, but its
+decoder accepts any order. Go decodes any order and always *writes* the canonical one, so
+`Encode` is a fixed point: encoding an already-encoded update never changes it again. The
+fixture test asserts byte identity for the 132 updates Yjs actually produced; the fuzz target
+asserts idempotency for everything else. Rejected preserving the input order: it would mean
+carrying an ordering field through the whole data model to be bug-compatible with input no
+client sends.
+
+### D19. Values that decode must be re-encodable
+`lib0`'s `readVarUint` can return values above 2^53−1 (its range check runs only when a
+continuation byte follows) while `writeVarUint` refuses them. That gap let a decoded client id
+become an update that could not be written back — found by the fuzzer as a silently truncated
+re-encode. Client ids, clocks and IDs are now range-checked on the way in, and `Update.Encode`
+/ `EncodeStateVector` return an error instead of a short buffer, since `lib0.Encoder` drops
+every write after its first failure.
+
+### D20. Structs whose info byte carries meaningless flags are rejected
+The flag bits for origin, rightOrigin and parentSub have no meaning on a `GC` or `Skip`
+struct. Yjs ignores them and writes zeros back, i.e. it silently rewrites the struct. Go
+rejects the update instead (`ErrCorruptUpdate`), so that what this server relays is always
+what it received. Also found by the fuzzer.
+
+### D21. Embed, format and legacy-JSON values are kept as raw JSON text
+Yjs stores these as `JSON.stringify` output and re-serialises them on write. Go cannot
+reproduce JavaScript's key order from a parsed value, so a decode-then-re-encode would change
+bytes that clients hash and merge. The raw string is stored instead and parsed only when a
+typed accessor needs the value. Same reasoning as [D15] one level up.
+
 ---
 
 ## Part 2 — The wire format, derived from source
