@@ -1,0 +1,11 @@
+{
+  "name": "ycollab-verify",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Applies Go-produced Yjs updates in real Yjs and checks the resulting state",
+  "type": "module",
+  "scripts": {
+    "self-test": "node apply.mjs --self-test"
+  },
+  "comment": "No dependencies on purpose: yjs is imported through ../fixturegen/dump.mjs so the verifier always runs the same yjs version that generated the fixtures."
+}
