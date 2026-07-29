@@ -178,8 +178,7 @@ func (a *Awareness) EncodeAll() ([]byte, error) {
 // This is the server-side timeout that y-protocols does not have (DECISIONS
 // C3). Without it a client that dies without sending its own null state stays
 // in the room forever and is handed to everyone who joins afterwards, so the
-// document accumulates ghost cursors. Removals go out at clock+1, which is what
-// makes peers accept them (awareness.js:250).
+// document accumulates ghost cursors.
 func (a *Awareness) Sweep(now time.Time, ttl time.Duration) ([]uint64, []byte, error) {
 	var stale []uint64
 	for id, e := range a.entries {
@@ -210,10 +209,20 @@ func (a *Awareness) RemoveClients(clients []uint64, now time.Time) ([]uint64, []
 	return a.remove(present, now)
 }
 
+// remove drops the given clients and encodes the announcement.
+//
+// The clock is deliberately left alone. A removal is accepted by peers at an
+// equal clock (awareness.js:250), so bumping is unnecessary - and actively
+// harmful: the client whose state we just dropped does not know we bumped it,
+// so its next announcement, one clock ahead of what it last sent, would land on
+// an equal clock here and be rejected. It would then stay invisible until its
+// own 15 s renewal pushed it past us. A reconnect must not cost a client half a
+// minute of being a ghost. y-protocols does the same thing for the same reason:
+// removeAwarenessStates only bumps the clock of the *local* client
+// (awareness.js:175-181), never of the peers it is dropping.
 func (a *Awareness) remove(clients []uint64, now time.Time) ([]uint64, []byte, error) {
 	for _, id := range clients {
 		e := a.entries[id]
-		e.clock++
 		e.present = false
 		e.state = ""
 		e.lastUpdated = now

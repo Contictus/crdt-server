@@ -186,6 +186,18 @@ const waitForQuiescence = async (clients, timeoutMs, log) => {
   return false
 }
 
+/** Waits for every client to see the same number of peers. */
+const waitForAwareness = async (clients, want, timeoutMs) => {
+  const deadline = Date.now() + timeoutMs
+  let seen = clients.map((c) => c.provider.awareness.getStates().size)
+  while (Date.now() < deadline) {
+    seen = clients.map((c) => c.provider.awareness.getStates().size)
+    if (new Set(seen).size === 1 && seen[0] === want) return seen
+    await sleep(250)
+  }
+  return seen
+}
+
 const main = async () => {
   const opts = parseArgs(process.argv.slice(2))
   const log = opts.quiet ? () => {} : (...args) => console.log(...args)
@@ -237,8 +249,12 @@ const main = async () => {
     }
   }
 
-  for (const t of [...timers, ...cursors]) clearInterval(t)
+  for (const t of timers) clearInterval(t)
   if (churnTimer) clearInterval(churnTimer)
+  // The cursor timers keep running: awareness states are refreshed by the
+  // people holding them, and a client that just reconnected is invisible to
+  // its peers until its own clock moves past what they last saw. Freezing the
+  // cursors would be testing a situation no editing session is ever in.
   log('editing stopped, waiting for convergence')
 
   const quiesced = await waitForQuiescence(clients, 60000, log)
@@ -263,14 +279,19 @@ const main = async () => {
     log(`converged: ${ops} ops, ${prints[0].text.length} chars, sv ${prints[0].sv}`)
   }
 
-  // Awareness must have converged too, or the demo shows ghost cursors.
-  const seen = clients.map((c) => c.provider.awareness.getStates().size)
-  if (new Set(seen).size !== 1) {
+  // Awareness must have converged too, or the demo shows ghost cursors. It is
+  // allowed to take longer than the document: after a reconnect a client is
+  // invisible to its peers until it publishes a state at a clock past the one
+  // they last saw, which is the cursor timer's next tick.
+  const seen = await waitForAwareness(clients, opts.clients, 30000)
+  if (new Set(seen).size !== 1 || seen[0] !== opts.clients) {
     failed = true
-    console.error(`awareness diverged: ${seen.join(', ')} peers seen`)
+    console.error(`awareness diverged: ${seen.join(', ')} peers seen, want ${opts.clients} everywhere`)
   } else {
     log(`awareness: every client sees ${seen[0]} peers`)
   }
+
+  for (const t of cursors) clearInterval(t)
 
   for (const c of clients) c.destroy()
   process.exit(failed ? 1 : 0)

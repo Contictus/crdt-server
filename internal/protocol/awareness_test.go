@@ -206,8 +206,8 @@ func TestAwarenessSweepRemovesSilentClients(t *testing.T) {
 		t.Fatal("swept a client that was still talking")
 	}
 
-	// The removal must go out at clock+1, or peers reject it: their own clock
-	// for that client already equals the old value and they hold a state.
+	// Peers accept the removal at the client's own clock, because they hold a
+	// state for it and the equal-clock null rule applies (awareness.js:250).
 	peer := protocol.NewAwareness()
 	mustApply(t, peer, singleEntry(7, 3, `{"a":1}`), start, 7)
 	mustApply(t, peer, payload, start, 7)
@@ -237,6 +237,15 @@ func TestAwarenessRemoveClients(t *testing.T) {
 	mustApply(t, peer, payload, now, 7)
 	if _, present := peer.State(7); present {
 		t.Fatal("peer did not accept the removal")
+	}
+
+	// A reconnecting client announces itself one clock past what it last sent.
+	// If the removal had bumped our clock, that announcement would land on an
+	// equal clock and be rejected, and the client would stay a ghost until its
+	// own 15 s renewal pushed it past us.
+	mustApply(t, aw, singleEntry(7, 4, `{"a":2}`), now, 7)
+	if state, present := aw.State(7); !present || state != `{"a":2}` {
+		t.Fatalf("reconnecting client was not accepted back: %q %v", state, present)
 	}
 
 	// Removing a client we never knew is a no-op, not an empty broadcast.
