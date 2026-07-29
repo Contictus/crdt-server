@@ -248,6 +248,56 @@ An idle room stops after five minutes and the document is dropped. `OnEvict` is 
 fills with a snapshot write. Rejected: introducing a `Store` interface with a no-op
 implementation now, which would be a guess at Phase 3's shape dressed up as a design.
 
+### D34. Room names map to document UUIDs by hashing
+The schema keys documents by UUID; the wire protocol keys rooms by the URL path,
+which people want to be readable. A name that already is a UUID is used as one; anything else
+becomes a version 5 UUID under a fixed namespace. Deterministic, no lookup table, and the
+schema stays exactly as the brief wrote it. Rejected: requiring UUIDs in the URL (unusable
+demo, and it pushes name management onto every client), and adding a `name` column (a schema
+change plus a second round trip on every open, to buy a rename feature nobody asked for).
+
+### D35. Loading applies every remaining log row, not just those above snapshot_seq
+The brief describes loading as the snapshot plus `doc_updates WHERE seq > snapshot_seq`. We
+read the whole remaining log instead. `seq` comes from an identity column, and identity values
+are handed out before commit, so a row with a lower seq can become visible *after* one with a
+higher seq. With the brief's filter, such a row is skipped forever - silent data loss.
+Compaction deletes exactly the rows it folded in, so anything still in the table has not been
+folded in, and if a row is ever re-applied redundantly it costs nothing, because updates are
+idempotent. This is the cheap half of the fix for [C6]; the expensive half is not needed yet.
+
+### D36. The room encodes snapshots, the writer picks the watermark
+Compaction needs two things that live in different goroutines: the document, which only the
+room may touch, and the highest log position actually written, which only the writer knows. So
+the room encodes the snapshot and hands it over, and the writer flushes what it has queued and
+compacts at its own last seq. The snapshot can cover more than the watermark does; the extra
+rows survive and are applied again on the next load. Rejected: having the writer ask the room
+for a snapshot (a round trip in the other direction, and the room would still have to encode
+it), and letting the room guess the watermark (it would guess high, and deletion would take
+rows that were never written).
+
+### D37. Writes are asynchronous, and the durability window is the flush interval
+The room hands updates to a per-room writer goroutine and carries on. A crash therefore loses
+whatever was queued but not yet written - at most one flush interval, 200 ms by default. That
+is acceptable here in a way it would not be in most systems, because the client that authored
+the update still has it and pushes it again during the reconnect handshake; the acceptance test
+covers exactly that path. Rejected: writing synchronously, which puts a database round trip in
+the middle of every keystroke's fanout and makes the database decide how fast people can type.
+When the write queue does fill, the room blocks rather than dropping: stalling is visible and
+recoverable, and silently discarding updates that clients believe are saved is neither.
+
+### D38. A failed read closes the room; a failed write does not
+Asymmetric on purpose. If the document cannot be read, serving an empty one under that name
+would let clients merge their state into a blank document and write the result back, which
+destroys the document for everyone. So the room closes with 1011 and clients retry. If a write
+fails, the document is still correct in memory and in every connected client, so the room keeps
+serving and logs loudly. Losing durability is bad; losing the document is worse.
+
+### D39. The resident-room cap evicts, it does not refuse
+Now that a room can write itself out, hitting the cap should cost a snapshot, not a document:
+the least recently used *idle* room is evicted to make space. A room with somebody connected is
+never evicted - freeing memory by disconnecting people who are editing is not a trade the
+registry may make - so the cap can still be reached, and then the join is refused.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an
@@ -624,13 +674,14 @@ after a fixed two rounds. Yjs has exactly the same behaviour (`pendingDs`), so t
 divergence from the reference implementation — it is a property of the protocol that the
 fanout design has to respect. Related to [C1].
 
-### C2. Compaction can race across replicas
+### C2. Compaction can race across replicas — resolved in Phase 3
 Any replica may compact any document (section 3, no ownership). Two replicas compacting
-concurrently can write snapshots out of order, and the loser's `DELETE FROM doc_updates WHERE
-seq <= snapshot_seq` can delete updates the winning snapshot does not contain — silent data
-loss. Fix at Phase 3: guard the snapshot write with `WHERE snapshot_seq < $new` and take a
-`pg_advisory_xact_lock(doc_id)` for the compaction transaction. Cheap, and it makes the "single
-transaction" requirement in section 7 actually safe.
+concurrently could write snapshots out of order, and the loser's delete would then remove
+updates the winning snapshot does not contain — silent data loss. Resolved as planned:
+`Store.Compact` takes `pg_advisory_xact_lock` on the document and only writes a snapshot that
+moves `snapshot_seq` forward, returning `ErrStaleSnapshot` and changing nothing otherwise. A
+test asserts an older snapshot cannot overwrite a newer one. See also [C6], which is the part
+of the same problem that is *not* fixed yet.
 
 ### C3. Awareness needs a server-side timeout — resolved in Phase 2
 `outdatedTimeout` is client-side only (2.9). A client that vanishes without sending
@@ -640,6 +691,23 @@ which the room runs every 5 s: a client that has been silent for 30 s is dropped
 removal is broadcast. A connection that closes cleanly has its states retracted immediately
 rather than 30 s later. The removal goes out at the client's own clock, not `clock + 1`, for
 the reason in [D30].
+
+### C6. Identity columns can commit out of order
+`seq` is `GENERATED ALWAYS AS IDENTITY`, so values are handed out before commit and a row with
+a lower seq can become visible after one with a higher seq. Two consequences, one handled and
+one not:
+
+Handled: loading reads the whole remaining log rather than `seq > snapshot_seq` ([D35]), so a
+late-committing row is still applied.
+
+Not handled: compaction deletes `seq <= watermark`. A row below the watermark that commits
+after the delete ran survives in the table (the delete has already happened) and is picked up
+by the next load - so nothing is lost today. But it *would* be lost if compaction ever ran
+again with a higher watermark before that row was folded in, and the window widens as soon as
+two replicas append to the same document, which is Phase 4. The fix, when it is needed: have
+compaction delete exactly the seqs it observed (`seq = ANY($1)`) instead of a range. Recorded
+now because the schema and the delete are cheap to change today and awkward to change later.
+Related to [C2].
 
 ### C4. Section 8 vs. TipTap
 Resolved in D8, kept here as a pointer: section 8's "no `YXmlFragment`" and Phase 2's "TipTap

@@ -16,17 +16,23 @@ Design decisions, the wire-format derivation and the open concerns are in
   bytes Yjs produced, and `tools/verify/apply.mjs` accepts the Go output in a real `Y.Doc`.
 - **Phase 2 — single-node WebSocket server.** Done: `internal/protocol`, `internal/room`,
   `internal/gateway`, `cmd/server`, the TipTap demo and the soak harness.
-- Phases 3-6 (persistence, Redis fanout, auth, load testing) are not started.
+- **Phase 3 — persistence.** Done: PostgreSQL snapshot + append-only update log, compaction at
+  500 updates, persist-on-evict, LRU cap on resident rooms.
+- Phases 4-6 (Redis fanout, auth, load testing) are not started.
 
 ## Run it
 
 ```sh
-go run ./cmd/server -addr :8080 -origins localhost:5173
+docker compose -f deploy/docker-compose.yml up -d
+go run ./cmd/server -addr :8080 -origins localhost:5173   -database-url postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
 ```
 
-The document name is the URL path, so `ws://localhost:8080/my-doc` is document `my-doc`.
-There is no persistence yet: a document lives as long as its room is resident (five idle
-minutes by default).
+The document name is the URL path, so `ws://localhost:8080/my-doc` is document `my-doc`. Names
+are mapped to document UUIDs by hashing, so they can be anything readable.
+
+Without `-database-url` the server still works, but a document lives only as long as its room
+is resident — five idle minutes by default. With it, updates are appended to a log, folded
+into a snapshot every 500 updates, and written out when a room is evicted.
 
 ### The demo
 
@@ -43,6 +49,16 @@ compared at a glance.
 ```sh
 go test ./... -race
 ```
+
+The store and the crash-recovery tests need a database and skip without one:
+
+```sh
+docker compose -f deploy/docker-compose.yml up -d
+YCOLLAB_TEST_DATABASE_URL=postgres://ycollab:ycollab@127.0.0.1:5433/ycollab go test ./... -race
+```
+
+Those tests build the server, kill the process outright, restart it and reconnect, because a
+graceful shutdown gets to flush and a crash does not.
 
 Convergence is also checked against real clients. With a server running:
 
@@ -64,9 +80,11 @@ internal/crdt/lib0    varUint, varInt, varString, varUint8Array and the any code
 internal/protocol     sync and awareness framing; pure bytes, no I/O
 internal/room         one actor goroutine per document
 internal/gateway      WebSocket lifecycle, pumps, backpressure
+internal/store        PostgreSQL: snapshots and the append-only update log
 tools/fixturegen      Node: generates the binary fixtures from real yjs
 tools/verify          Node: applies Go-produced updates in real yjs
 tools/soak            Node: drives real clients at a running server
 web                   TipTap + y-websocket demo
+deploy                docker-compose for local Postgres
 testdata/fixtures     committed binary fixtures
 ```
