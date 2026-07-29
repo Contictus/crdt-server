@@ -24,7 +24,8 @@ Design decisions, the wire-format derivation and the open concerns are in
 
 ```sh
 docker compose -f deploy/docker-compose.yml up -d
-go run ./cmd/server -addr :8080 -origins localhost:5173   -database-url postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
+go run ./cmd/server -addr :8080 -origins localhost:5173 \
+  -database-url postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
 ```
 
 The document name is the URL path, so `ws://localhost:8080/my-doc` is document `my-doc`. Names
