@@ -1,0 +1,104 @@
+:root {
+  color-scheme: light dark;
+  --fg: #1a1a1a;
+  --muted: #666;
+  --bg: #fdfdfc;
+  --line: #ddd;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #e8e8e8;
+    --muted: #999;
+    --bg: #16181a;
+    --line: #333;
+  }
+}
+
+body {
+  margin: 0 auto;
+  max-width: 46rem;
+  padding: 2rem 1.5rem 6rem;
+  font: 16px/1.6 system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.sub {
+  margin: 0.25rem 0 1rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+code,
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.85em;
+}
+
+.status {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 1rem;
+  margin: 0 0 1.5rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+
+.status dt {
+  color: var(--muted);
+}
+
+.status dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#connection[data-state="connected"] {
+  color: #1a8a4a;
+}
+
+#connection[data-state="disconnected"] {
+  color: #c02f2f;
+}
+
+.tiptap {
+  min-height: 20rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: none;
+}
+
+/* Remote cursors, as y-prosemirror renders them. */
+.collaboration-carets__caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 1px solid #0d0d0d;
+  border-right: 1px solid #0d0d0d;
+  word-break: normal;
+  pointer-events: none;
+}
+
+.collaboration-carets__label {
+  position: absolute;
+  top: -1.4em;
+  left: -1px;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px 3px 3px 0;
+  color: #fff;
+  font-size: 0.7rem;
+  font-style: normal;
+  font-weight: 600;
+  line-height: normal;
+  white-space: nowrap;
+  user-select: none;
+}

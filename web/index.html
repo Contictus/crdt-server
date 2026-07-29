@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ycollab demo</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>ycollab</h1>
+      <p class="sub">
+        TipTap over an unmodified <code>y-websocket</code> client, talking to the Go server.
+        Open this page in a second tab to collaborate; change the room with the
+        <code>#room</code> fragment.
+      </p>
+      <dl class="status">
+        <dt>room</dt><dd id="room">-</dd>
+        <dt>connection</dt><dd id="connection">connecting</dd>
+        <dt>peers</dt><dd id="peers">0</dd>
+        <dt>state vector</dt><dd id="sv" class="mono">-</dd>
+      </dl>
+    </header>
+    <main id="editor"></main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
