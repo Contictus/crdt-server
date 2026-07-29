@@ -37,6 +37,11 @@ type vectors struct {
 		Bytes []int  `json:"bytes"`
 		Hex   string `json:"hex"`
 	} `json:"varUint8Array"`
+	Any []struct {
+		Name string `json:"name"`
+		Tag  int    `json:"tag"`
+		Hex  string `json:"hex"`
+	} `json:"any"`
 	Invalid []struct {
 		Kind   string `json:"kind"`
 		Hex    string `json:"hex"`
@@ -271,6 +276,8 @@ func readByKind(kind string, b []byte) error {
 		_, err = d.ReadVarString()
 	case "varUint8Array":
 		_, err = d.ReadVarUint8Array()
+	case "any":
+		_, err = d.ReadAny()
 	default:
 		return errors.New("unknown kind " + kind)
 	}

@@ -33,6 +33,14 @@ var (
 	ErrIntegerOutOfRange = errors.New("lib0: integer out of range")
 	// ErrNegativeLength means a length prefix did not fit in an int.
 	ErrNegativeLength = errors.New("lib0: length prefix too large")
+	// ErrUnknownAnyTag means an any value carried a type tag lib0 does not
+	// define.
+	ErrUnknownAnyTag = errors.New("lib0: unknown any type tag")
+	// ErrUnsupportedType means a Go value has no representation in the any
+	// format.
+	ErrUnsupportedType = errors.New("lib0: unsupported any type")
+	// ErrDepthExceeded means an any value nested deeper than maxAnyDepth.
+	ErrDepthExceeded = errors.New("lib0: any nesting too deep")
 )
 
 // UTF16Length returns the number of UTF-16 code units in s.

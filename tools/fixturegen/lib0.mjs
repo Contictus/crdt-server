@@ -62,6 +62,51 @@ const varUint8ArrayValues = [
   Array.from({ length: 300 }, (_, i) => (i * 31) & 0xff)
 ]
 
+/**
+ * `any` vectors are named rather than self-describing: the Go test holds a
+ * table of name -> expected Go value, so the expectation stays strongly typed
+ * and a new vector here fails the Go test until it is given an expectation.
+ */
+const anyValues = [
+  ['undefined', undefined],
+  ['null', null],
+  ['true', true],
+  ['false', false],
+  ['int-0', 0],
+  ['int-1', 1],
+  ['int-neg-1', -1],
+  ['int-127', 127],
+  ['int-128', 128],
+  ['int-max31', 2147483647], // BITS31: still an integer
+  ['int-neg-max31', -2147483647],
+  // 2^31 is one past the integer range, but is exactly representable as a
+  // float32, so lib0 emits tag 124 - not 123 and not 125.
+  ['num-2pow31', 2147483648],
+  ['float32-1.5', 1.5],
+  ['float32-neg-0.5', -0.5],
+  ['float64-0.1', 0.1], // 0.1 does not survive a float32 round trip
+  ['float64-1e300', 1e300],
+  // isFloat32(NaN) compares NaN === NaN, which is false, so NaN takes the
+  // float64 branch while Infinity takes the float32 one.
+  ['nan', NaN],
+  ['infinity', Infinity],
+  ['neg-infinity', -Infinity],
+  ['negative-zero', -0], // integer branch, writeVarInt(-0) sets the sign bit
+  ['bigint-0', 0n],
+  ['bigint-max-safe-plus', 9007199254740993n],
+  ['bigint-neg', -9007199254740993n],
+  ['string-empty', ''],
+  ['string-emoji', 'hi 🎉'],
+  ['bytes-empty', new Uint8Array([])],
+  ['bytes', new Uint8Array([0, 1, 255, 128])],
+  ['array-empty', []],
+  ['array-mixed', [1, 'two', null, true, [3.5]]],
+  ['object-empty', {}],
+  // Insertion order is what lib0 writes; a Go encoder that sorts keys would
+  // produce different bytes for this vector.
+  ['object-nested', { zeta: 1, alpha: { b: [1, 2] }, m: 'x' }]
+]
+
 export const buildLib0Vectors = () => ({
   notes: 'Golden vectors produced by lib0 itself. hex is the exact byte sequence lib0 writes.',
   varUint: varUintValues.map((value) => ({
@@ -92,6 +137,11 @@ export const buildLib0Vectors = () => ({
     bytes,
     hex: hex(enc((e) => encoding.writeVarUint8Array(e, new Uint8Array(bytes))))
   })),
+  any: anyValues.map(([name, value]) => ({
+    name,
+    tag: enc((e) => encoding.writeAny(e, value))[0],
+    hex: hex(enc((e) => encoding.writeAny(e, value)))
+  })),
   // Byte sequences a decoder must reject rather than misread.
   invalid: [
     { kind: 'varUint', hex: '', reason: 'empty input' },
@@ -101,7 +151,10 @@ export const buildLib0Vectors = () => ({
     { kind: 'varInt', hex: 'ffffffffffffffffff7f', reason: 'value exceeds 2^53-1' },
     { kind: 'varString', hex: '05', reason: 'length 5 but no payload' },
     { kind: 'varString', hex: '05616263', reason: 'length 5 but only 3 bytes follow' },
-    { kind: 'varUint8Array', hex: '0501020304', reason: 'length 5 but only 4 bytes follow' }
+    { kind: 'varUint8Array', hex: '0501020304', reason: 'length 5 but only 4 bytes follow' },
+    { kind: 'any', hex: '00', reason: 'tag 0 is not an any type' },
+    { kind: 'any', hex: '77', reason: 'string tag with no payload' },
+    { kind: 'any', hex: '75', reason: 'array tag with no length' }
   ],
   // Input that lib0 does NOT reject: it reads past the end of its buffer, gets
   // `undefined`, and returns a bogus value. Go must return an error instead -
@@ -133,13 +186,29 @@ export const selfCheckLib0Vectors = (vectors) => {
     const got = decoding.readVarUint8Array(decoding.createDecoder(bytesOf(v.hex)))
     if (hex(got) !== hex(new Uint8Array(v.bytes))) throw new Error('varUint8Array self-check failed')
   }
+  // `any` vectors round-trip against the original JS value, so a wrong tag or a
+  // wrong endianness shows up here before the Go side ever sees the bytes.
+  const sameAny = (a, b) => {
+    if (typeof a === 'number' && typeof b === 'number' && isNaN(a) && isNaN(b)) return true
+    if (a instanceof Uint8Array || b instanceof Uint8Array) return hex(a) === hex(b)
+    if (typeof a === 'bigint' || typeof b === 'bigint') return a === b
+    if (a === null || b === null || typeof a !== 'object') return Object.is(a, b) || a === b
+    return JSON.stringify(a) === JSON.stringify(b)
+  }
+  for (const [i, v] of vectors.any.entries()) {
+    const got = decoding.readAny(decoding.createDecoder(bytesOf(v.hex)))
+    if (!sameAny(anyValues[i][1], got)) {
+      throw new Error(`any self-check failed for ${v.name}: got ${String(got)}`)
+    }
+  }
   // Every "invalid" vector must actually be rejected by lib0, otherwise the Go
   // tests would be asserting a stricter contract than Yjs implements.
   const readers = {
     varUint: decoding.readVarUint,
     varInt: decoding.readVarInt,
     varString: decoding.readVarString,
-    varUint8Array: decoding.readVarUint8Array
+    varUint8Array: decoding.readVarUint8Array,
+    any: decoding.readAny
   }
   const throwsInLib0 = (v) => {
     try {

@@ -122,6 +122,29 @@ before the install need to be restarted. Rejected running the race build only in
 the feedback loop matters most in Phase 2 where the room actor and gateway are written, and a
 container round trip per test run would discourage running it.
 
+### D15. Decoded `any` objects keep their key order
+`writeAny` writes object keys in `Object.keys` order (`lib0/encoding.js:590`) and Yjs stores
+the resulting bytes verbatim inside `ContentAny`, so a value that is decoded and re-encoded
+must reproduce that order. A Go `map[string]any` cannot, so `ReadAny` returns an ordered
+`*lib0.Object` (a `[]Field` slice with `Get`/`Set`). `WriteAny` still accepts a plain map for
+values we construct ourselves, writing its keys sorted so our own output stays deterministic.
+Rejected returning `map[string]any` for ergonomics: it would make re-encoding a document
+byte-unstable, which is exactly the property Phase 1 is verified on.
+
+### D16. NaN is canonicalised on write
+Go's `math.NaN()` is `0x7FF8000000000001`; V8 produces `0x7FF8000000000000`. Both are NaN, but
+only the second matches the bytes a browser writes, so `WriteAny` writes the canonical pattern
+for every NaN and drops the payload bits. JavaScript cannot express a NaN payload through
+`writeAny`, so nothing is lost. Found by the golden vector, not by reading the source —
+`isFloat32(NaN)` is `false` because it compares `NaN === NaN`, which is what puts NaN on the
+float64 branch in the first place while `Infinity` goes to float32.
+
+### D17. `any` decoding is depth- and length-guarded
+`readAny` is recursive and takes lengths from the input; a hostile 5-byte frame can otherwise
+ask for a 2^31-element array. Go caps nesting at 128 (`ErrDepthExceeded`) and refuses any
+length prefix larger than the remaining input before allocating. Yjs has no such limits;
+this only rejects input no real client produces.
+
 ---
 
 ## Part 2 — The wire format, derived from source
