@@ -1,0 +1,4 @@
+# Generated fixtures are written with LF by tools/fixturegen. Checking them out
+# with CRLF would make "regenerate and diff" report spurious changes on Windows.
+* text=auto eol=lf
+*.bin binary
