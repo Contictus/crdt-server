@@ -113,13 +113,14 @@ server ends up integrating garbage. The divergence is recorded as a `goStricter`
 `testdata/fixtures/lib0/vectors.json`, and the generator asserts lib0 still behaves that way,
 so if a future lib0 fixes it we find out.
 
-### D14. `-race` needs cgo, which needs a C compiler this machine does not have
-`go test -race` on windows/amd64 requires `CGO_ENABLED=1` and gcc; `go env` reports
-`CGO_ENABLED=0` and there is no gcc/clang on PATH. Tests currently run without `-race`.
-This has no effect on `internal/crdt/lib0` (no goroutines), but it must be resolved before
-the room actor and gateway land in Phase 2, where `-race` is the whole point. Options: install
-a MinGW-w64 toolchain via winget, or run the race build in CI/WSL/Docker on Linux. Awaiting
-your call.
+### D14. `-race` runs locally via MinGW-w64
+`go test -race` on windows/amd64 needs `CGO_ENABLED=1` and a C compiler, and this machine had
+neither. Resolved by installing WinLibs MinGW-w64 (`winget install
+BrechtSanders.WinLibs.POSIX.UCRT`, gcc 16.1.0) and `go env -w CGO_ENABLED=1`. The installer
+puts its `mingw64\bin` on the persistent user PATH, so new shells pick it up; shells started
+before the install need to be restarted. Rejected running the race build only in Docker/WSL:
+the feedback loop matters most in Phase 2 where the room actor and gateway are written, and a
+container round trip per test run would discourage running it.
 
 ---
 
