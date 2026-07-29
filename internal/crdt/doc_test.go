@@ -59,6 +59,8 @@ func jsonSafe(v any) any {
 		return map[string]any{"$bytes": bytes}
 	case *crdt.ContentDoc:
 		return map[string]any{"$subdoc": t.GUID}
+	case *crdt.AbstractType:
+		return jsonSafe(t.ToJSON())
 	case *lib0.Object:
 		out := make(map[string]any, len(t.Fields))
 		for _, f := range t.Fields {

@@ -543,6 +543,18 @@ each replica publishes its state vector for active rooms every N seconds, and pe
 `Y.diffUpdate` against it. Same code path as `SyncStep1`/`SyncStep2`, bounded cost, self-healing.
 Decision deferred to Phase 4; flagging now because it affects the fanout message schema.
 
+### C5. A pending deletion is invisible to peers until its structs arrive
+Found by the convergence property test, not by reading the source. If replica A receives a
+delete for structs it has not seen, the deletion sits in `pendingDeletes` and does **not**
+appear in `DeleteSet()`, so a peer syncing with A at that moment learns the structs but not
+that they are deleted. It heals on the next exchange after the structs arrive — but only if
+another exchange happens. Consequences: (a) one round of anti-entropy is not a convergence
+guarantee, so the Phase 4 mechanism must keep running rather than fire once per reconnect;
+(b) the property test loops the exchange until it stabilises rather than asserting convergence
+after a fixed two rounds. Yjs has exactly the same behaviour (`pendingDs`), so this is not a
+divergence from the reference implementation — it is a property of the protocol that the
+fanout design has to respect. Related to [C1].
+
 ### C2. Compaction can race across replicas
 Any replica may compact any document (section 3, no ownership). Two replicas compacting
 concurrently can write snapshots out of order, and the loser's `DELETE FROM doc_updates WHERE
