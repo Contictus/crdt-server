@@ -1,0 +1,27 @@
+# Development and test dependencies.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#   export YCOLLAB_TEST_DATABASE_URL=postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
+#   go test ./internal/store/...
+#
+# Port 5433 on purpose: a developer machine often already has a Postgres on
+# 5432, and silently sharing it with one is how a test suite ends up truncating
+# somebody's real database.
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ycollab
+      POSTGRES_PASSWORD: ycollab
+      POSTGRES_DB: ycollab
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ycollab -d ycollab"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    tmpfs:
+      # The data is disposable: this is for tests and local development, and a
+      # tmpfs makes the integration tests noticeably quicker.
+      - /var/lib/postgresql/data
