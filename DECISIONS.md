@@ -174,6 +174,26 @@ reproduce JavaScript's key order from a parsed value, so a decode-then-re-encode
 bytes that clients hash and merge. The raw string is stored instead and parsed only when a
 typed accessor needs the value. Same reasoning as [D15] one level up.
 
+### D22. Undeliverable updates are held, not rejected
+An update whose dependencies are missing goes into a pending list and is retried after every
+later integration, mirroring Yjs's `restStructs`/`pendingStructs`. Rejecting it would lose the
+edit permanently, and a Yjs client legitimately sends an update before the one it builds on
+when a websocket reconnects mid-stream. The same applies to delete-set ranges naming clocks we
+have not received (`pendingDeletes`). `Doc.PendingCount` exposes the backlog so Phase 2 can
+alarm on it.
+
+### D23. Type lengths are computed by walking, not cached
+Yjs maintains `AbstractType._length` incrementally. Go recomputes it, because the server does
+not edit documents in a loop - it integrates updates and serialises them - and an incremental
+counter is one more thing that can silently drift out of sync with the item list. Revisit if
+Phase 6 benchmarks show it.
+
+### D24. Go re-encodes documents byte-identically to Yjs
+Not a decision so much as a checked property: applying each fixture's `state.bin` into a Go
+`Doc` and calling `EncodeStateAsUpdate(nil)` reproduces the original file byte for byte, for
+all 13 scenarios, and `tools/verify/apply.mjs` accepts every one of those outputs in a real
+`Y.Doc`. `cmd/ycollab-dump` regenerates the outputs for that check.
+
 ---
 
 ## Part 2 — The wire format, derived from source

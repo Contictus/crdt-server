@@ -41,6 +41,94 @@ func (t *AbstractType) write(e *lib0.Encoder) {
 	}
 }
 
+// ToJSON renders the type's live content as Go values: string for text types,
+// map[string]any for maps, []any for sequences. Values inside come from
+// lib0.ReadAny, and nested types recurse.
+//
+// It is a debugging and test view, not a hot path: it walks the item list.
+func (t *AbstractType) ToJSON() any {
+	switch t.TypeRef {
+	case TypeRefText, TypeRefXMLText:
+		return AsText(t).String()
+	case TypeRefMap:
+		return t.mapJSON()
+	case TypeRefArray, TypeRefXMLFragment, TypeRefXMLElement:
+		return t.sequenceJSON()
+	default:
+		// A root type's kind is never stated on the wire. Guess from what it
+		// actually holds; an empty type reads as an empty map.
+		if t.start != nil {
+			return t.sequenceJSON()
+		}
+		return t.mapJSON()
+	}
+}
+
+func (t *AbstractType) mapJSON() map[string]any {
+	out := make(map[string]any, len(t.mapItems))
+	for key, it := range t.mapItems {
+		if it == nil || it.deleted {
+			continue
+		}
+		if v, ok := itemValue(it); ok {
+			out[key] = v
+		}
+	}
+	return out
+}
+
+func (t *AbstractType) sequenceJSON() []any {
+	out := []any{}
+	for it := t.start; it != nil; it = it.right {
+		if !it.Countable() {
+			continue
+		}
+		switch c := it.Content.(type) {
+		case *ContentAny:
+			out = append(out, c.Values...)
+		case *ContentString:
+			out = append(out, c.Str)
+		case *ContentType:
+			out = append(out, c.Type.ToJSON())
+		case *ContentDoc:
+			out = append(out, c)
+		case *ContentBinary:
+			out = append(out, c.Data)
+		case *ContentJSON:
+			for _, v := range c.Values {
+				out = append(out, v)
+			}
+		}
+	}
+	return out
+}
+
+// itemValue returns the value a map entry holds.
+func itemValue(it *Item) (any, bool) {
+	switch c := it.Content.(type) {
+	case *ContentAny:
+		if len(c.Values) == 0 {
+			return nil, false
+		}
+		return c.Values[len(c.Values)-1], true
+	case *ContentType:
+		return c.Type.ToJSON(), true
+	case *ContentString:
+		return c.Str, true
+	case *ContentBinary:
+		return c.Data, true
+	case *ContentDoc:
+		return c, true
+	case *ContentJSON:
+		if len(c.Values) == 0 {
+			return nil, false
+		}
+		return c.Values[len(c.Values)-1], true
+	default:
+		return nil, false
+	}
+}
+
 func readAbstractType(d *lib0.Decoder) (*AbstractType, error) {
 	ref, err := d.ReadVarUint()
 	if err != nil {
