@@ -1,0 +1,60 @@
+[
+  {
+    "file": "update-000.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 0
+          },
+          "len": 1,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "map"
+          },
+          "parentSub": "sub",
+          "content": {
+            "ref": 9,
+            "kind": "ContentDoc",
+            "guid": "fixture-subdoc-0000"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-001.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 1
+          },
+          "len": 4,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "text"
+          },
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "host"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  }
+]

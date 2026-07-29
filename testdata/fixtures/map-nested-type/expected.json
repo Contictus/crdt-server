@@ -1,0 +1,173 @@
+{
+  "scenario": "map-nested-type",
+  "notes": "ContentType (ref 7) inside a map: nested Y.Text, Y.Map and Y.Array.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "map": {
+        "kind": "map",
+        "json": {
+          "child": {
+            "deep": true
+          },
+          "list": [
+            1,
+            "two",
+            {
+              "three": 3
+            }
+          ],
+          "rich": "nested"
+        }
+      }
+    },
+    "stateVector": {
+      "1001": 13
+    },
+    "deleteSet": {},
+    "structCount": 6
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "rich",
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 2
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 1
+        },
+        "len": 6,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 0
+          }
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "nested"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 7
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "child",
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 1
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 8
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 7
+          }
+        },
+        "parentSub": "deep",
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            true
+          ]
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 9
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "list",
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 0
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 10
+        },
+        "len": 3,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 9
+          }
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            1,
+            "two",
+            {
+              "three": 3
+            }
+          ]
+        }
+      }
+    ],
+    "deleteSet": {}
+  }
+}

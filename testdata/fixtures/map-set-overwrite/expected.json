@@ -1,0 +1,168 @@
+{
+  "scenario": "map-set-overwrite",
+  "notes": "YMap: same-key overwrite by one client, and concurrent same-key set by two clients.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": false
+    },
+    {
+      "label": "b",
+      "clientID": 2002,
+      "gc": false
+    }
+  ],
+  "gc": false,
+  "state": {
+    "types": {
+      "map": {
+        "kind": "map",
+        "json": {
+          "conflict": "from-b",
+          "k": "v2",
+          "other": 42
+        }
+      }
+    },
+    "stateVector": {
+      "1001": 4,
+      "2002": 1
+    },
+    "deleteSet": {
+      "1001": [
+        [
+          0,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ]
+    },
+    "structCount": 5
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "conflict",
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            "from-b"
+          ]
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "k",
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            "v1"
+          ]
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 1
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 0
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            "v2"
+          ]
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 2
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "other",
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            42
+          ]
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 3
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "conflict",
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            "from-a"
+          ]
+        }
+      }
+    ],
+    "deleteSet": {
+      "1001": [
+        [
+          0,
+          1
+        ],
+        [
+          3,
+          1
+        ]
+      ]
+    }
+  }
+}

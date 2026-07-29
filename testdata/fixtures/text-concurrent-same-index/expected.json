@@ -1,0 +1,79 @@
+{
+  "scenario": "text-concurrent-same-index",
+  "notes": "Two clients insert at index 0 with identical (null) origin. YATA tie-break by client id.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    },
+    {
+      "label": "b",
+      "clientID": 2002,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "text": {
+        "kind": "text",
+        "string": "aaabbb",
+        "delta": [
+          {
+            "insert": "aaabbb"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 3,
+      "2002": 3
+    },
+    "deleteSet": {},
+    "structCount": 2
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 0
+        },
+        "len": 3,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "bbb"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 3,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "aaa"
+        }
+      }
+    ],
+    "deleteSet": {}
+  }
+}

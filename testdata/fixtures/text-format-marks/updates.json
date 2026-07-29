@@ -1,0 +1,293 @@
+[
+  {
+    "file": "update-000.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 0
+          },
+          "len": 11,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "text"
+          },
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "Hello World"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-001.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 11
+          },
+          "len": 1,
+          "origin": null,
+          "rightOrigin": {
+            "client": 1001,
+            "clock": 0
+          },
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "bold",
+            "value": true
+          }
+        },
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 12
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 4
+          },
+          "rightOrigin": {
+            "client": 1001,
+            "clock": 5
+          },
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "bold",
+            "value": null
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-002.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 13
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 5
+          },
+          "rightOrigin": {
+            "client": 1001,
+            "clock": 6
+          },
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "italic",
+            "value": true
+          }
+        },
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 14
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 13
+          },
+          "rightOrigin": {
+            "client": 1001,
+            "clock": 6
+          },
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "color",
+            "value": "#ff0000"
+          }
+        },
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 15
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 10
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "italic",
+            "value": null
+          }
+        },
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 16
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 15
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "color",
+            "value": null
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-003.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 17
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 16
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "alt",
+            "value": "logo"
+          }
+        },
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 18
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 17
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 5,
+            "kind": "ContentEmbed",
+            "embed": {
+              "image": "https://example.com/y.png"
+            }
+          }
+        },
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 19
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 18
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 6,
+            "kind": "ContentFormat",
+            "key": "alt",
+            "value": null
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-004.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 20
+          },
+          "len": 6,
+          "origin": {
+            "client": 1001,
+            "clock": 10
+          },
+          "rightOrigin": {
+            "client": 1001,
+            "clock": 15
+          },
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": " plain"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  }
+]

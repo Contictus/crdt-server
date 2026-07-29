@@ -1,0 +1,77 @@
+[
+  {
+    "file": "update-000.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 0
+          },
+          "len": 11,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "text"
+          },
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "Hello World"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-001.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [],
+      "deleteSet": {
+        "1001": [
+          [
+            5,
+            6
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "file": "update-002.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 11
+          },
+          "len": 1,
+          "origin": {
+            "client": 1001,
+            "clock": 10
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "!"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  }
+]

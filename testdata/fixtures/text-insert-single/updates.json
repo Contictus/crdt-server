@@ -1,0 +1,31 @@
+[
+  {
+    "file": "update-000.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 0
+          },
+          "len": 5,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "text"
+          },
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "Hello"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  }
+]

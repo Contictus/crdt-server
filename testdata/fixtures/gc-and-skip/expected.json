@@ -1,0 +1,119 @@
+{
+  "scenario": "gc-and-skip",
+  "notes": "gc enabled: deleted subtrees collapse into GC structs (ref 0). Also emits merged-with-skip.bin containing a Skip struct (ref 10).",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "map": {
+        "kind": "map",
+        "json": {}
+      },
+      "text": {
+        "kind": "text",
+        "string": "bbbbbccccc",
+        "delta": [
+          {
+            "insert": "bbbbbccccc"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 17
+    },
+    "deleteSet": {
+      "1001": [
+        [
+          0,
+          7
+        ]
+      ]
+    },
+    "structCount": 4
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "map"
+        },
+        "parentSub": "doomed",
+        "content": {
+          "ref": 1,
+          "kind": "ContentDeleted",
+          "len": 1
+        }
+      },
+      {
+        "kind": "GC",
+        "id": {
+          "client": 1001,
+          "clock": 1
+        },
+        "len": 1
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 2
+        },
+        "len": 5,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 1,
+          "kind": "ContentDeleted",
+          "len": 5
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 7
+        },
+        "len": 10,
+        "origin": {
+          "client": 1001,
+          "clock": 6
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "bbbbbccccc"
+        }
+      }
+    ],
+    "deleteSet": {
+      "1001": [
+        [
+          0,
+          7
+        ]
+      ]
+    }
+  }
+}

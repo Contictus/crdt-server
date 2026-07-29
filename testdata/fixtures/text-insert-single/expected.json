@@ -1,0 +1,54 @@
+{
+  "scenario": "text-insert-single",
+  "notes": "Smallest possible update: one client, one ContentString insert (ref 4).",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "text": {
+        "kind": "text",
+        "string": "Hello",
+        "delta": [
+          {
+            "insert": "Hello"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 5
+    },
+    "deleteSet": {},
+    "structCount": 1
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 5,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "Hello"
+        }
+      }
+    ],
+    "deleteSet": {}
+  }
+}

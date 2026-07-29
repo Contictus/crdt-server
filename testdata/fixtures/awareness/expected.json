@@ -1,0 +1,75 @@
+{
+  "scenario": "awareness",
+  "notes": "y-protocols/awareness encoding: varUint count, then (clientID, clock, JSON state) triples.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001
+    },
+    {
+      "label": "b",
+      "clientID": 2002
+    }
+  ],
+  "updates": [
+    {
+      "file": "update-single.bin",
+      "states": [
+        {
+          "clientID": 1001,
+          "clock": 1,
+          "state": {
+            "cursor": {
+              "anchor": 3,
+              "head": 7
+            },
+            "user": {
+              "color": "#ff8800",
+              "name": "ada"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "file": "update-multi.bin",
+      "states": [
+        {
+          "clientID": 1001,
+          "clock": 1,
+          "state": {
+            "cursor": {
+              "anchor": 3,
+              "head": 7
+            },
+            "user": {
+              "color": "#ff8800",
+              "name": "ada"
+            }
+          }
+        },
+        {
+          "clientID": 2002,
+          "clock": 1,
+          "state": {
+            "cursor": null,
+            "user": {
+              "color": "#0088ff",
+              "name": "grace"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "file": "update-remove.bin",
+      "states": [
+        {
+          "clientID": 2002,
+          "clock": 1,
+          "state": null
+        }
+      ]
+    }
+  ]
+}

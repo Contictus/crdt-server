@@ -1,0 +1,368 @@
+{
+  "scenario": "deleteset-fragmented",
+  "notes": "Many disjoint delete ranges per client, across three clients, gc disabled.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": false
+    },
+    {
+      "label": "b",
+      "clientID": 2002,
+      "gc": false
+    },
+    {
+      "label": "c",
+      "clientID": 3003,
+      "gc": false
+    }
+  ],
+  "gc": false,
+  "state": {
+    "types": {
+      "text": {
+        "kind": "text",
+        "string": "MKcghivwxyz",
+        "delta": [
+          {
+            "insert": "MKcghivwxyz"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 10,
+      "2002": 6,
+      "3003": 6
+    },
+    "deleteSet": {
+      "1001": [
+        [
+          0,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          9,
+          1
+        ]
+      ],
+      "2002": [
+        [
+          1,
+          1
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "3003": [
+        [
+          0,
+          1
+        ]
+      ]
+    },
+    "structCount": 13
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 3003,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 9
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "u"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 3003,
+          "clock": 1
+        },
+        "len": 5,
+        "origin": {
+          "client": 3003,
+          "clock": 0
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "vwxyz"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 1001,
+          "clock": 0
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "K"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 1
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 2002,
+          "clock": 0
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "L"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 2
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 2002,
+          "clock": 1
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "M"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 3
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 2002,
+          "clock": 2
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "N"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 4
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 2002,
+          "clock": 3
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "O"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 5
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 2002,
+          "clock": 4
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "P"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 2,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "ab"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 2
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 1
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "c"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 3
+        },
+        "len": 3,
+        "origin": {
+          "client": 1001,
+          "clock": 2
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "def"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 6
+        },
+        "len": 3,
+        "origin": {
+          "client": 1001,
+          "clock": 5
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "ghi"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 9
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 8
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "j"
+        }
+      }
+    ],
+    "deleteSet": {
+      "1001": [
+        [
+          0,
+          2
+        ],
+        [
+          3,
+          3
+        ],
+        [
+          9,
+          1
+        ]
+      ],
+      "2002": [
+        [
+          1,
+          1
+        ],
+        [
+          3,
+          3
+        ]
+      ],
+      "3003": [
+        [
+          0,
+          1
+        ]
+      ]
+    }
+  }
+}

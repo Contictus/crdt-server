@@ -1,0 +1,422 @@
+{
+  "generator": "tools/fixturegen",
+  "versions": {
+    "lib0": "0.2.117",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.31",
+    "y-websocket": "3.0.0"
+  },
+  "updateFormat": "v1",
+  "fixtures": [
+    {
+      "name": "text-insert-single",
+      "notes": "Smallest possible update: one client, one ContentString insert (ref 4).",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin"
+      ]
+    },
+    {
+      "name": "text-concurrent-same-index",
+      "notes": "Two clients insert at index 0 with identical (null) origin. YATA tie-break by client id.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        },
+        {
+          "label": "b",
+          "clientID": 2002,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv-b.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin"
+      ]
+    },
+    {
+      "name": "text-concurrent-after-shared-origin",
+      "notes": "Both clients insert directly after the same existing item: identical origin AND identical rightOrigin.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        },
+        {
+          "label": "b",
+          "clientID": 2002,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin"
+      ]
+    },
+    {
+      "name": "text-delete",
+      "notes": "gc disabled, so deleted items stay as ContentDeleted (ref 1) plus a delete set.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": false
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin"
+      ]
+    },
+    {
+      "name": "text-three-client-interleaved",
+      "notes": "Three clients, partial syncs, out-of-order integration, multi-client struct grouping.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        },
+        {
+          "label": "b",
+          "clientID": 2002,
+          "gc": true
+        },
+        {
+          "label": "c",
+          "clientID": 3003,
+          "gc": true
+        }
+      ],
+      "files": [
+        "diff-sv.bin",
+        "diff.bin",
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin",
+        "update-006.bin",
+        "update-007.bin",
+        "update-008.bin",
+        "update-009.bin"
+      ]
+    },
+    {
+      "name": "map-set-overwrite",
+      "notes": "YMap: same-key overwrite by one client, and concurrent same-key set by two clients.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": false
+        },
+        {
+          "label": "b",
+          "clientID": 2002,
+          "gc": false
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin",
+        "update-006.bin",
+        "update-007.bin"
+      ]
+    },
+    {
+      "name": "map-nested-type",
+      "notes": "ContentType (ref 7) inside a map: nested Y.Text, Y.Map and Y.Array.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin"
+      ]
+    },
+    {
+      "name": "text-format-marks",
+      "notes": "ContentFormat (ref 6) and ContentEmbed (ref 5) as produced by rich text editors.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin"
+      ]
+    },
+    {
+      "name": "xml-prosemirror",
+      "notes": "y-prosemirror/TipTap document shape: XmlFragment > XmlElement > XmlText with attributes.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin"
+      ]
+    },
+    {
+      "name": "varint-boundaries",
+      "notes": "Large client ids, clocks and lengths crossing 7/14/21/28-bit varUint boundaries; every lib0 writeAny type.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 268435456,
+          "gc": true
+        },
+        {
+          "label": "b",
+          "clientID": 268435455,
+          "gc": true
+        }
+      ],
+      "files": [
+        "diff-sv.bin",
+        "diff.bin",
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin",
+        "update-006.bin",
+        "update-007.bin",
+        "update-008.bin",
+        "update-009.bin",
+        "update-010.bin",
+        "update-011.bin",
+        "update-012.bin",
+        "update-013.bin",
+        "update-014.bin",
+        "update-015.bin",
+        "update-016.bin",
+        "update-017.bin",
+        "update-018.bin",
+        "update-019.bin",
+        "update-020.bin"
+      ]
+    },
+    {
+      "name": "deleteset-fragmented",
+      "notes": "Many disjoint delete ranges per client, across three clients, gc disabled.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": false
+        },
+        {
+          "label": "b",
+          "clientID": 2002,
+          "gc": false
+        },
+        {
+          "label": "c",
+          "clientID": 3003,
+          "gc": false
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin",
+        "update-006.bin",
+        "update-007.bin",
+        "update-008.bin",
+        "update-009.bin",
+        "update-010.bin",
+        "update-011.bin",
+        "update-012.bin",
+        "update-013.bin",
+        "update-014.bin",
+        "update-015.bin",
+        "update-016.bin",
+        "update-017.bin",
+        "update-018.bin",
+        "update-019.bin",
+        "update-020.bin",
+        "update-021.bin",
+        "update-022.bin",
+        "update-023.bin",
+        "update-024.bin",
+        "update-025.bin",
+        "update-026.bin",
+        "update-027.bin",
+        "update-028.bin",
+        "update-029.bin",
+        "update-030.bin",
+        "update-031.bin",
+        "update-032.bin",
+        "update-033.bin",
+        "update-034.bin",
+        "update-035.bin",
+        "update-036.bin",
+        "update-037.bin",
+        "update-038.bin",
+        "update-039.bin"
+      ]
+    },
+    {
+      "name": "content-doc",
+      "notes": "ContentDoc (ref 9). Subdocuments are out of scope as a feature, but the decoder must not choke on one.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin"
+      ]
+    },
+    {
+      "name": "gc-and-skip",
+      "notes": "gc enabled: deleted subtrees collapse into GC structs (ref 0). Also emits merged-with-skip.bin containing a Skip struct (ref 10).",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "merged-with-skip.bin",
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin",
+        "update-004.bin",
+        "update-005.bin",
+        "update-006.bin"
+      ]
+    },
+    {
+      "name": "awareness",
+      "notes": "awareness protocol",
+      "clients": [],
+      "files": [
+        "expected.json",
+        "msg-awareness.bin",
+        "msg-query-awareness.bin",
+        "update-multi.bin",
+        "update-remove.bin",
+        "update-single.bin"
+      ]
+    }
+  ]
+}

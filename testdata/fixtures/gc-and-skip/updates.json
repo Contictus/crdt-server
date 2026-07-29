@@ -1,0 +1,186 @@
+[
+  {
+    "file": "update-000.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 0
+          },
+          "len": 1,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "map"
+          },
+          "parentSub": "doomed",
+          "content": {
+            "ref": 7,
+            "kind": "ContentType",
+            "typeRef": 1
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-001.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 1
+          },
+          "len": 1,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "id": {
+              "client": 1001,
+              "clock": 0
+            }
+          },
+          "parentSub": "x",
+          "content": {
+            "ref": 8,
+            "kind": "ContentAny",
+            "values": [
+              "y"
+            ]
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-002.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 2
+          },
+          "len": 5,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "text"
+          },
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "aaaaa"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-003.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 7
+          },
+          "len": 5,
+          "origin": {
+            "client": 1001,
+            "clock": 6
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "bbbbb"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-004.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 12
+          },
+          "len": 5,
+          "origin": {
+            "client": 1001,
+            "clock": 11
+          },
+          "rightOrigin": null,
+          "parent": null,
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "ccccc"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-005.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [],
+      "deleteSet": {
+        "1001": [
+          [
+            0,
+            2
+          ]
+        ]
+      }
+    }
+  },
+  {
+    "file": "update-006.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [],
+      "deleteSet": {
+        "1001": [
+          [
+            2,
+            5
+          ]
+        ]
+      }
+    }
+  }
+]

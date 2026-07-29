@@ -1,0 +1,108 @@
+{
+  "scenario": "text-delete",
+  "notes": "gc disabled, so deleted items stay as ContentDeleted (ref 1) plus a delete set.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": false
+    }
+  ],
+  "gc": false,
+  "state": {
+    "types": {
+      "text": {
+        "kind": "text",
+        "string": "Hello!",
+        "delta": [
+          {
+            "insert": "Hello!"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 12
+    },
+    "deleteSet": {
+      "1001": [
+        [
+          5,
+          6
+        ]
+      ]
+    },
+    "structCount": 3
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 5,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "Hello"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 5
+        },
+        "len": 6,
+        "origin": {
+          "client": 1001,
+          "clock": 4
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": " World"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 11
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 10
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "!"
+        }
+      }
+    ],
+    "deleteSet": {
+      "1001": [
+        [
+          5,
+          6
+        ]
+      ]
+    }
+  }
+}

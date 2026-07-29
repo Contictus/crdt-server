@@ -1,0 +1,245 @@
+{
+  "scenario": "xml-prosemirror",
+  "notes": "y-prosemirror/TipTap document shape: XmlFragment > XmlElement > XmlText with attributes.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "prosemirror": {
+        "kind": "xml",
+        "xml": "<heading level=\"2\">Title</heading><paragraph>Hello <bold>world</bold></paragraph>"
+      }
+    },
+    "stateVector": {
+      "1001": 23
+    },
+    "deleteSet": {},
+    "structCount": 10
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "prosemirror"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 3,
+          "nodeName": "paragraph"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 1
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 0
+          }
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 6
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 2
+        },
+        "len": 6,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 1
+          }
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "Hello "
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 8
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 7
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 6,
+          "kind": "ContentFormat",
+          "key": "bold",
+          "value": true
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 9
+        },
+        "len": 5,
+        "origin": {
+          "client": 1001,
+          "clock": 8
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "world"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 14
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 13
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 6,
+          "kind": "ContentFormat",
+          "key": "bold",
+          "value": null
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 15
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": {
+          "client": 1001,
+          "clock": 0
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 3,
+          "nodeName": "heading"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 16
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 15
+          }
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 7,
+          "kind": "ContentType",
+          "typeRef": 6
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 17
+        },
+        "len": 5,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 16
+          }
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "Title"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 22
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "id": {
+            "client": 1001,
+            "clock": 15
+          }
+        },
+        "parentSub": "level",
+        "content": {
+          "ref": 8,
+          "kind": "ContentAny",
+          "values": [
+            "2"
+          ]
+        }
+      }
+    ],
+    "deleteSet": {}
+  }
+}

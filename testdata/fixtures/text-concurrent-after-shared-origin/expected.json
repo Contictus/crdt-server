@@ -1,0 +1,126 @@
+{
+  "scenario": "text-concurrent-after-shared-origin",
+  "notes": "Both clients insert directly after the same existing item: identical origin AND identical rightOrigin.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    },
+    {
+      "label": "b",
+      "clientID": 2002,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "text": {
+        "kind": "text",
+        "string": "XaaabbbY",
+        "delta": [
+          {
+            "insert": "XaaabbbY"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 5,
+      "2002": 3
+    },
+    "deleteSet": {},
+    "structCount": 4
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 2002,
+          "clock": 0
+        },
+        "len": 3,
+        "origin": {
+          "client": 1001,
+          "clock": 0
+        },
+        "rightOrigin": {
+          "client": 1001,
+          "clock": 1
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "bbb"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "text"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "X"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 1
+        },
+        "len": 1,
+        "origin": {
+          "client": 1001,
+          "clock": 0
+        },
+        "rightOrigin": null,
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "Y"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 2
+        },
+        "len": 3,
+        "origin": {
+          "client": 1001,
+          "clock": 0
+        },
+        "rightOrigin": {
+          "client": 1001,
+          "clock": 1
+        },
+        "parent": null,
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "aaa"
+        }
+      }
+    ],
+    "deleteSet": {}
+  }
+}
