@@ -20,12 +20,12 @@ caret ranges: the fixtures are checked in as binary, so a silent minor-version b
 changes encoding would show up as a mysterious Go test failure rather than as a dependency
 change in review.
 
-**`y-websocket@3.0.0` was added as a devDependency and needs your approval.** Reason: the
-outer websocket framing (`messageSync = 0`, `messageAwareness = 1`, `messageAuth = 2`,
-`messageQueryAwareness = 3`) is defined by `y-websocket`, not by `y-protocols`, and section 6
-of the brief says derive the protocol from source rather than memory. It is also the client
-library the Phase 2 demo will use. It is Node test tooling, not a Go dependency. Say the word
-and I will drop it and hardcode the constants with a comment instead.
+`y-websocket@3.0.0` is a devDependency of the same project. The outer websocket framing
+(`messageSync = 0`, `messageAwareness = 1`, `messageAuth = 2`, `messageQueryAwareness = 3`) is
+defined by `y-websocket`, not by `y-protocols`, and the brief says derive the protocol from
+source rather than memory. Since Phase 2 it also does real work: `tools/soak` drives its
+`WebsocketProvider` against the Go server, and `web/` pins the same version. Node tooling, not
+a Go dependency.
 
 ### D3. `node_modules` is gitignored, `package-lock.json` is committed
 The brief calls `node_modules` the authoritative spec source, which argues for committing it.
@@ -193,6 +193,64 @@ Not a decision so much as a checked property: applying each fixture's `state.bin
 `Doc` and calling `EncodeStateAsUpdate(nil)` reproduces the original file byte for byte, for
 all 13 scenarios, and `tools/verify/apply.mjs` accepts every one of those outputs in a real
 `Y.Doc`. `cmd/ycollab-dump` regenerates the outputs for that check.
+
+### D25. `internal/protocol` is pure bytes
+The framing layer takes and returns byte slices and touches no socket, no clock beyond the
+timestamp callers pass in, and no room state. That is what lets every message type be checked
+against the committed `msg-*.bin` fixtures that real `y-protocols` produced, in both
+directions. Rejected: folding the framing into the gateway, where it would only be reachable
+through a live connection and the fixtures would go unused.
+
+### D26. Awareness state is relayed verbatim, never parsed
+A client's awareness state is kept as the raw JSON string it sent. The server has no business
+knowing what a cursor is, and re-serialising the value would let key order or number formatting
+drift on the way through, for no benefit. Same reasoning as D21 for embed and format content.
+Rejected: decoding to a Go map, which would also mean re-encoding on every fanout.
+
+### D27. Updates are relayed as the author's bytes
+When a client sends an update the room applies it and then broadcasts **the bytes it received**,
+rather than re-encoding a delta from its own document. Two reasons: peers get exactly what the
+author produced, and an update whose dependencies we are still missing is relayed rather than
+stuck behind our own integration state (which is what would happen if we broadcast a diff from
+our store — see [C5]). Yjs's own server broadcasts the update its transaction emitted, which is
+a merged form; ours is closer to the wire the client wrote. Duplicate structs on the wire are
+idempotent, so the cost is bandwidth, not correctness.
+
+### D28. A sender never receives its own update back
+The reference `y-websocket` server broadcasts to every connection including the author. We skip
+the author: it already has the update by construction, and echoing doubles the fanout of the
+one message pattern that dominates traffic. Consequence to be aware of: a client **alone** in a
+room hears nothing at all, so after 30 s it hits `messageReconnectTimeout`
+(`y-websocket.js:99,388-397`) and reconnects. That happens with the reference server too - its
+ping is a WebSocket control frame, which does not reset the client's timer - and a reconnect
+costs one `SyncStep1` and a diff. Rejected: sending traffic we do not need in order to keep a
+client's timer happy.
+
+### D29. Backpressure closes the connection at 1008
+Per the brief. The outbound queue is 256 frames; when it is full the room closes that
+connection with 1008 and drops it, without growing the buffer and without ever blocking the
+room goroutine. Recovery is a reconnect and a diff against the client's state vector, which is
+precisely what the CRDT makes cheap. Rejected: an unbounded queue (OOM under fanout), and
+blocking the room (one slow client stalls everybody editing that document).
+
+### D30. Removals do not bump the client's clock
+Found by the 5-minute soak, not by reading the source. When a connection leaves, the server
+retracts the awareness states it published. Bumping the clock on that retraction looks natural -
+it guarantees peers accept it - but the departing client does not know we bumped it, so when it
+reconnects and announces itself one clock past what it last sent, the announcement lands on an
+equal clock and is rejected. The client stays a ghost until its own 15 s renewal pushes it past
+us. Removals therefore go out at the client's own clock, which peers accept anyway under the
+equal-clock null rule (`awareness.js:250`). `y-protocols` does the same: `removeAwarenessStates`
+bumps only the *local* client's clock, never that of the peers it drops (`awareness.js:175-181`).
+
+### D31. Room eviction calls a hook, and in Phase 2 the hook is nil
+An idle room stops after five minutes and the document is dropped. `OnEvict` is the seam Phase 3
+fills with a snapshot write. Rejected: introducing a `Store` interface with a no-op
+implementation now, which would be a guess at Phase 3's shape dressed up as a design.
+
+### D32. The Go directive moved to 1.23
+`github.com/coder/websocket` requires it. The brief asks for Go 1.22+, so this is inside the
+constraint; noting it because it was a side effect of `go get`, not a decision made on purpose.
 
 ---
 
@@ -563,12 +621,14 @@ loss. Fix at Phase 3: guard the snapshot write with `WHERE snapshot_seq < $new` 
 `pg_advisory_xact_lock(doc_id)` for the compaction transaction. Cheap, and it makes the "single
 transaction" requirement in section 7 actually safe.
 
-### C3. Awareness needs a server-side timeout
+### C3. Awareness needs a server-side timeout — resolved in Phase 2
 `outdatedTimeout` is client-side only (2.9). A client that vanishes without sending
 `state: null` leaves a ghost cursor in every other client that has already synced its state,
-because the server keeps rebroadcasting it on join. The server must track `lastUpdated` per
-client id and broadcast a removal (state `null` at `clock + 1`) after 30 s of silence. Phase 2
-detail, recorded here so it is not discovered in the demo.
+because the server keeps rebroadcasting it on join. Resolved by `protocol.Awareness.Sweep`,
+which the room runs every 5 s: a client that has been silent for 30 s is dropped and the
+removal is broadcast. A connection that closes cleanly has its states retracted immediately
+rather than 30 s later. The removal goes out at the client's own clock, not `clock + 1`, for
+the reason in [D30].
 
 ### C4. Section 8 vs. TipTap
 Resolved in D8, kept here as a pointer: section 8's "no `YXmlFragment`" and Phase 2's "TipTap
