@@ -4,12 +4,16 @@
 //	go run ./cmd/server -addr :8080 -origins localhost:5173
 //
 // The document name is the URL path, so ws://host:8080/my-doc is document
-// "my-doc". There is no persistence yet: this is the Phase 2 server, and a
-// document lives only as long as a room is resident.
+// "my-doc".
+//
+// Both of the things that make it more than one process are optional flags, and
+// the server says so at startup when they are missing: -database-url makes
+// documents outlive the process, and -redis-url makes replicas share them.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -21,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/gateway"
 	"github.com/mesutokul/ycollab/internal/room"
 	"github.com/mesutokul/ycollab/internal/store"
@@ -46,6 +51,11 @@ func run() error {
 		databaseURL   = flag.String("database-url", os.Getenv("YCOLLAB_DATABASE_URL"), "PostgreSQL connection string; empty keeps documents in memory only")
 		compactAfter  = flag.Int("compact-after", room.DefaultCompactAfter, "fold the update log into a snapshot after this many updates")
 		flushInterval = flag.Duration("flush-interval", room.DefaultFlushInterval, "how long an update may sit in memory before it is written")
+
+		redisURL    = flag.String("redis-url", os.Getenv("YCOLLAB_REDIS_URL"), "Redis connection string for cross-replica fanout; empty makes this a single node")
+		redisPrefix = flag.String("redis-prefix", envOr("YCOLLAB_REDIS_PREFIX", cluster.DefaultPrefix), "namespace for the Redis channel names")
+		antiEntropy = flag.Duration("anti-entropy", room.DefaultAntiEntropy, "how often a room announces its state vector to the other replicas")
+		tick        = flag.Duration("tick", room.DefaultTick, "how often a room checks awareness timeouts, idleness and whether it owes an announcement")
 	)
 	flag.Parse()
 
@@ -79,22 +89,61 @@ func run() error {
 		log.Warn("no -database-url: documents live only as long as their room")
 	}
 
+	var bus cluster.Bus
+	if *redisURL != "" {
+		redis, err := cluster.OpenRedis(context.Background(), cluster.RedisConfig{
+			URL:    *redisURL,
+			Prefix: *redisPrefix,
+			Logger: log,
+		})
+		if err != nil {
+			return err
+		}
+		defer redis.Close()
+		bus = redis
+	} else {
+		// Also worth saying out loud: without a bus, two replicas behind the same
+		// load balancer serve the same document name as two unrelated documents.
+		log.Warn("no -redis-url: this node does not share documents with any other")
+	}
+
 	manager := room.NewManager(roomCtx, room.ManagerConfig{
 		MaxRooms: *maxRooms,
 		Room: room.Config{
 			IdleTimeout:   *idleTimeout,
 			AwarenessTTL:  *awarenessTTL,
+			Tick:          *tick,
 			Store:         persistence,
 			CompactAfter:  *compactAfter,
 			FlushInterval: *flushInterval,
+			Bus:           bus,
+			AntiEntropy:   *antiEntropy,
 			Logger:        log,
 		},
 	})
+	if bus != nil {
+		log.Info("joined the cluster", "node_id", manager.NodeID(), "anti_entropy", *antiEntropy)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintln(w, "ok")
+	})
+	// /statsz is what makes the cluster's behaviour checkable from outside: the
+	// counters say how many envelopes this node published and how many it
+	// filtered out as its own. Prometheus is Phase 6; this is deliberately the
+	// smallest thing a test can read.
+	mux.HandleFunc("/statsz", func(w http.ResponseWriter, _ *http.Request) {
+		body := map[string]any{
+			"node_id": manager.NodeID(),
+			"rooms":   manager.Len(),
+			"cluster": manager.Stats().Snapshot(),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(body); err != nil {
+			log.Debug("could not write stats", "err", err)
+		}
 	})
 	mux.Handle("/", gateway.New(gateway.Config{
 		Rooms:   manager,

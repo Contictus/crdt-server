@@ -64,10 +64,10 @@ func freePort(t *testing.T) string {
 	return l.Addr().String()
 }
 
-func startServer(t *testing.T, binary, addr, dbURL string) *server {
+func startServer(t *testing.T, binary, addr, dbURL string, extra ...string) *server {
 	t.Helper()
 	logs := &bytes.Buffer{}
-	cmd := exec.Command(binary,
+	args := append([]string{
 		"-addr", addr,
 		"-database-url", dbURL,
 		// Short intervals so the test does not have to wait for a default that
@@ -75,7 +75,8 @@ func startServer(t *testing.T, binary, addr, dbURL string) *server {
 		"-flush-interval", "20ms",
 		"-compact-after", "5",
 		"-log-level", "debug",
-	)
+	}, extra...)
+	cmd := exec.Command(binary, args...)
 	cmd.Stdout = logs
 	cmd.Stderr = logs
 	if err := cmd.Start(); err != nil {
