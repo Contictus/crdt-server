@@ -22,6 +22,21 @@ groups:
             up, or this replica is CPU-bound and its rooms cannot drain their
             queues.
 
+      # Throttling is the rate limiter doing its job, and a little of it is
+      # normal on a busy day. A lot of it means clients are queueing behind the
+      # limit, which they experience as the document going slow - so it is worth
+      # knowing whether the limit is set too low or somebody is misbehaving.
+      - alert: YcollabThrottlingHeavily
+        expr: rate(ycollab_throttled_seconds_total[5m]) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab is spending real time throttling clients"
+          description: >
+            {{ $labels.instance }} has been waiting more than a second per second
+            across its connections. Either -rate-messages is too low for what
+            these clients do, or one of them is flooding.
+
       # Writes failing means edits exist only in memory and in the clients that
       # made them. The server says so loudly in its logs; this is the same thing
       # said to whoever is on call.

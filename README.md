@@ -49,6 +49,23 @@ writing each update before relaying it, at the cost of a database round trip per
 `-max-conns` and `-max-rooms` bound what one node will hold. Both default to unlimited, which
 is right for a laptop and wrong for anything reachable; the Kubernetes manifests set them.
 
+### Limits
+
+Two things a connected client could otherwise do without permission, both bounded by default:
+
+- **Cursors.** An awareness state is a name, a colour and a couple of offsets. Without a bound,
+  one client could publish a 16 MiB "cursor" that this server holds in memory, relays to every
+  peer and publishes to every replica. `-awareness-max-state` (4 KiB) and
+  `-awareness-max-clients` (1024) bound the size and the count; a client that exceeds them is
+  told which rule it broke and closed with 1008.
+- **Rate.** A token bucket per connection on messages per second (`-rate-messages`, 200) and
+  bytes per second (`-rate-bytes`, 8 MiB). Over the limit the server *waits* rather than
+  disconnecting: it stops reading, TCP slows the sender, and only that connection is affected.
+  A person typing produces ten to thirty messages a second, so the defaults are there to catch
+  a client that has gone wrong, not to shape normal traffic.
+
+For every one of these, zero means the default and a negative value means no limit.
+
 ### More than one replica
 
 `-redis-url` makes a process one replica of a cluster rather than a server on its own. Replicas

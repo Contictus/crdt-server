@@ -638,6 +638,75 @@ output is verified byte for byte would be trading a real guarantee for an
 imaginary gain. The benchmarks are committed as the baseline the next person
 argues against.
 
+### D77. An awareness state is bounded, and so is the number of them
+A cursor is a name, a colour and a couple of offsets - a few hundred bytes. The
+frame limit is 16 MiB, so until now one client could publish a 16 MiB "cursor",
+which this server held in memory, relayed to every peer in the room and published
+to every replica. That was the cheapest amplification the server offered, and it
+needed no permission beyond being allowed to connect. Found while writing the
+project evaluation, not by a test.
+
+`-awareness-max-state` (4 KiB) and `-awareness-max-clients` (1024) bound both
+dimensions: the size of a state and how many clients one document tracks. Client
+ids are chosen by the client, so without the second one connection could invent
+millions of them.
+
+Three details that took a second pass:
+
+  - A removal is always accepted, whatever the limits say. Refusing one would
+    leave a cursor on screen that its owner had retracted.
+  - The cap counts *cursors*, not entries. A removed entry is a remembered clock
+    ([D71]), and holding a slot for it would make a full room refuse newcomers
+    for ten minutes after every departure - which the first version did, and a
+    test caught.
+  - Remembered clocks are themselves capped at twice the limit, oldest dropped
+    first, because a client cycling through ids would otherwise grow the map for
+    the whole ten-minute window.
+
+Rejected: refusing the offending entry and continuing. The room already closes a
+connection that sends an unusable awareness update, and a client publishing a
+megabyte of cursor is one this server should not be carrying for.
+
+### D78. A refused cursor closes the local connection and only counts a remote one
+A local connection gets a permission-denied message and 1008, the same treatment
+backpressure and read-only writes get: say which rule was broken, then close. An
+oversized state that arrived over the cluster bus is counted and dropped instead.
+There is nobody to disconnect there, and taking a replica down because a client
+on the far side of the cluster misbehaved would spread the problem rather than
+contain it.
+
+### D79. Rate limiting slows a connection, it does not close it
+A token bucket per connection, on two dimensions: messages per second and bytes
+per second. They are two different floods - many small updates cost CPU per
+message, a few large ones cost memory and fanout bandwidth - and a limit on one
+alone leaves the other open.
+
+Over the limit the read pump waits. It does not close the connection, because a
+client that bursts is usually a client being used, and disconnecting it costs a
+reconnect and a resync to fix something that resolves itself in a millisecond.
+Waiting also puts the backpressure where it belongs: we stop reading, the socket
+buffer fills, and the sender's own TCP stack slows it down. Only that connection
+is affected - the limiter is per connection and the room never waits on it.
+
+Defaults are on and generous: 200 messages a second and 8 MiB a second, against
+the ten to thirty messages a second a person actually produces. They exist to
+stop a client that has gone wrong, not to shape normal traffic. Zero means the
+default and negative means no limit, so "unset" and "unlimited" are not the same
+word.
+
+Verified against a real server: ten clients pushing 60 messages a second each
+into a 20/s limit were slowed to the limit with zero errors and zero
+disconnections, and the throttle counters recorded 2,919 waits totalling 144
+seconds.
+
+### D80. 1011 is for a document we could not serve, not for a peer that left
+That load run showed ten connections closing with 1011, "internal error",
+because a write that failed after the client went away was being recorded that
+way. The close code never reaches a peer that is already gone; what it reaches is
+the metric, and "ten internal errors" every time ten people close a tab is how an
+operator learns to ignore the graph. A failed write is now 1001. 1011 is left to
+mean what it says: this server could not serve this document.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an
