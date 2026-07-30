@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/mesutokul/ycollab/internal/cluster"
+	"github.com/mesutokul/ycollab/internal/metrics"
 )
 
 // ErrTooManyRooms means the resident-room cap is reached and every resident
@@ -53,6 +54,9 @@ func NewManager(ctx context.Context, cfg ManagerConfig) *Manager {
 	}
 	if cfg.Room.Bus != nil && cfg.Room.NodeID == 0 {
 		cfg.Room.NodeID = cluster.NewNodeID()
+	}
+	if cfg.Room.Metrics == nil {
+		cfg.Room.Metrics = metrics.Nop()
 	}
 	return &Manager{
 		cfg:   cfg,
@@ -134,6 +138,8 @@ func (m *Manager) tryGet(name string) (*Room, []*Room, error) {
 	// goroutine has looked at the config yet.
 	r.cfg.OnExit = func(string) { m.forget(name, r) }
 	m.rooms[name] = r
+	m.cfg.Room.Metrics.RoomsStarted.Inc()
+	m.cfg.Room.Metrics.RoomsResident.Set(float64(len(m.rooms)))
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
@@ -166,6 +172,7 @@ func (m *Manager) forget(name string, r *Room) {
 	if m.rooms[name] == r {
 		delete(m.rooms, name)
 		delete(m.used, name)
+		m.cfg.Room.Metrics.RoomsResident.Set(float64(len(m.rooms)))
 	}
 }
 

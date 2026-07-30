@@ -18,6 +18,7 @@ import (
 
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/crdt"
+	"github.com/mesutokul/ycollab/internal/metrics"
 	"github.com/mesutokul/ycollab/internal/protocol"
 	"github.com/mesutokul/ycollab/internal/store"
 )
@@ -77,6 +78,9 @@ type Config struct {
 	AntiEntropy time.Duration
 	// Stats counts cluster traffic, shared across the node's rooms.
 	Stats *Stats
+	// Metrics is where this room reports what it does. Nil becomes a set
+	// registered nowhere.
+	Metrics *metrics.Metrics
 
 	Logger *slog.Logger
 
@@ -119,6 +123,9 @@ func (c *Config) setDefaults() {
 	if c.Stats == nil {
 		c.Stats = &Stats{}
 	}
+	if c.Metrics == nil {
+		c.Metrics = metrics.Nop()
+	}
 	if c.Bus != nil && c.NodeID == 0 {
 		// A node id of zero would filter nothing, and worse, would agree with
 		// every other misconfigured node. Generating one is safe: its only job is
@@ -156,8 +163,10 @@ type Room struct {
 	sinceSnapshot int
 	folded        []int64
 
-	// stats is cfg.Stats, hoisted because every counter touch reads it.
-	stats *Stats
+	// stats is cfg.Stats, hoisted because every counter touch reads it; metrics
+	// is cfg.Metrics for the same reason.
+	stats   *Stats
+	metrics *metrics.Metrics
 
 	// remote carries envelopes from the bus into the room goroutine; pub carries
 	// ours out. Both are nil without a bus. Neither is ever blocked on: the room
@@ -204,6 +213,7 @@ func New(cfg Config) *Room {
 		aw:      protocol.NewAwareness(),
 		docID:   store.DocumentID(cfg.Name),
 		stats:   cfg.Stats,
+		metrics: cfg.Metrics,
 		conns:   make(map[Conn]*connState),
 		mailbox: make(chan command, cfg.Mailbox),
 		done:    make(chan struct{}),
@@ -429,14 +439,19 @@ func (r *Room) frame(conn Conn, frame []byte) {
 	}
 	switch v := msg.(type) {
 	case protocol.SyncStep1Message:
+		r.metrics.MessagesReceived.WithLabelValues("sync_step1").Inc()
 		r.syncStep1(conn, v.StateVector)
 	case protocol.SyncStep2Message:
+		r.metrics.MessagesReceived.WithLabelValues("sync_step2").Inc()
 		r.update(conn, v.Update)
 	case protocol.UpdateMessage:
+		r.metrics.MessagesReceived.WithLabelValues("update").Inc()
 		r.update(conn, v.Update)
 	case protocol.AwarenessMessage:
+		r.metrics.MessagesReceived.WithLabelValues("awareness").Inc()
 		r.awareness(conn, v.Payload)
 	case protocol.QueryAwarenessMessage:
+		r.metrics.MessagesReceived.WithLabelValues("query_awareness").Inc()
 		r.sendAll(conn)
 	case protocol.PermissionDeniedMessage:
 		// Server to client only. A client sending one is confused, but it is
@@ -493,12 +508,18 @@ func (r *Room) update(conn Conn, update []byte) {
 		// Anything else is a real edit. It is refused out loud rather than
 		// dropped: a client whose edits vanish silently shows its user a document
 		// that will not survive a reload, which is worse than being told.
+		r.metrics.Denied.WithLabelValues("read_only").Inc()
 		r.log.Warn("update from a read-only connection", "conn", conn.ID())
 		conn.Send(protocol.WritePermissionDenied("read-only: this token does not grant write access"))
 		r.drop(conn, ClosePolicyViolation, "read-only")
 		return
 	}
-	if err := r.doc.ApplyUpdate(update); err != nil {
+	started := time.Now()
+	err := r.doc.ApplyUpdate(update)
+	metrics.Observe(r.metrics.ApplyDuration, started)
+	r.metrics.UpdateBytes.Observe(float64(len(update)))
+	if err != nil {
+		r.metrics.ApplyFailed.Inc()
 		r.log.Warn("bad update", "conn", conn.ID(), "err", err)
 		r.drop(conn, CloseProtocolError, "bad update")
 		return
@@ -581,7 +602,10 @@ func (r *Room) broadcast(frame []byte, except Conn) {
 		if conn == except {
 			continue
 		}
-		if !conn.Send(frame) {
+		if conn.Send(frame) {
+			r.metrics.FramesSent.Inc()
+		} else {
+			r.metrics.FramesDropped.Inc()
 			slow = append(slow, conn)
 		}
 	}
@@ -594,8 +618,10 @@ func (r *Room) broadcast(frame []byte, except Conn) {
 // deliver sends one frame to one connection, reporting whether it went out.
 func (r *Room) deliver(conn Conn, frame []byte) bool {
 	if conn.Send(frame) {
+		r.metrics.FramesSent.Inc()
 		return true
 	}
+	r.metrics.FramesDropped.Inc()
 	r.dropSlow(conn)
 	return false
 }

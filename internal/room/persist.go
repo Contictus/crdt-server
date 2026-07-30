@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/mesutokul/ycollab/internal/metrics"
 	"github.com/mesutokul/ycollab/internal/store"
 )
 
@@ -43,10 +44,14 @@ type persistJob struct {
 // load restores the document from the database: the snapshot, then every log
 // row that is still there.
 func (r *Room) load(ctx context.Context) error {
+	started := time.Now()
 	doc, err := r.cfg.Store.Load(ctx, r.docID)
 	if err != nil {
+		r.metrics.StoreFailed.WithLabelValues("load").Inc()
 		return err
 	}
+	defer func() { metrics.Observe(r.metrics.LoadDuration, started) }()
+	metrics.Observe(r.metrics.StoreDuration.WithLabelValues("load"), started)
 	if doc.Snapshot != nil {
 		if err := r.doc.ApplyUpdate(doc.Snapshot); err != nil {
 			return err
@@ -132,10 +137,13 @@ func (r *Room) persist(jobs <-chan persistJob) {
 		if len(batch) == 0 {
 			return
 		}
+		started := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 		seqs, err := r.cfg.Store.Append(ctx, r.docID, batch)
 		cancel()
+		metrics.Observe(r.metrics.StoreDuration.WithLabelValues("append"), started)
 		if err != nil {
+			r.metrics.StoreFailed.WithLabelValues("append").Inc()
 			// The updates stay in memory and in every connected client. Say so
 			// loudly rather than pretending the write happened.
 			r.log.Error("could not write updates", "count", len(batch), "err", err)
@@ -176,11 +184,14 @@ func (r *Room) compact(snapshot []byte) {
 	if len(r.folded) == 0 {
 		return
 	}
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 	defer cancel()
 	err := r.cfg.Store.Compact(ctx, r.docID, snapshot, r.folded)
+	metrics.Observe(r.metrics.StoreDuration.WithLabelValues("compact"), started)
 	switch {
 	case err == nil:
+		r.metrics.Compactions.Inc()
 		r.log.Info("compacted", "rows", len(r.folded), "snapshot", len(snapshot))
 		// Those rows are gone; a later snapshot must not try to delete them
 		// again, and must not claim to cover them.
@@ -192,6 +203,7 @@ func (r *Room) compact(snapshot []byte) {
 		r.folded = r.folded[:0]
 	default:
 		// Keep the rows: the next compaction should still cover them.
+		r.metrics.StoreFailed.WithLabelValues("compact").Inc()
 		r.log.Error("could not compact", "err", err)
 	}
 }

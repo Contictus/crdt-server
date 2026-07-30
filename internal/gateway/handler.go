@@ -18,6 +18,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/mesutokul/ycollab/internal/metrics"
 	"github.com/mesutokul/ycollab/internal/protocol"
 	"github.com/mesutokul/ycollab/internal/room"
 )
@@ -52,6 +53,10 @@ type Config struct {
 	PingInterval time.Duration
 	OutBuffer    int
 
+	// Metrics is where connection counts and traffic are reported. Nil becomes
+	// a set registered nowhere, so this package never checks for one.
+	Metrics *metrics.Metrics
+
 	Logger *slog.Logger
 
 	// Authorize decides whether this request may open this document, and with
@@ -75,9 +80,10 @@ type Grant struct {
 // Handler serves the WebSocket endpoint. The URL path is the document name,
 // matching y-websocket's serverUrl + '/' + roomname (y-websocket.js:403-406).
 type Handler struct {
-	cfg    Config
-	log    *slog.Logger
-	nextID atomic.Uint64
+	cfg     Config
+	log     *slog.Logger
+	metrics *metrics.Metrics
+	nextID  atomic.Uint64
 }
 
 // New returns a handler. Rooms is required.
@@ -97,7 +103,10 @@ func New(cfg Config) *Handler {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
-	return &Handler{cfg: cfg, log: cfg.Logger}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics.Nop()
+	}
+	return &Handler{cfg: cfg, log: cfg.Logger, metrics: cfg.Metrics}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -127,9 +136,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The rejection has to travel over the upgraded connection: that is where
 	// y-websocket's client reads it (y-websocket.js:84-92).
 	if authErr != nil {
+		// The reason is the label, and it is a label rather than the error text
+		// because the text can name a document: a metric with a document name in
+		// it is a metric with unbounded cardinality.
+		h.metrics.Denied.WithLabelValues("unauthorized").Inc()
 		h.reject(r.Context(), ws, authErr)
 		return
 	}
+
+	h.metrics.ConnectionsTotal.Inc()
+	h.metrics.ConnectionsOpen.Inc()
+	defer h.metrics.ConnectionsOpen.Dec()
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -183,6 +200,7 @@ func (h *Handler) readPump(ctx context.Context, c *conn, rm *room.Room, log *slo
 			c.Close(room.CloseProtocolError, "binary frames only")
 			return
 		}
+		h.metrics.BytesReceived.Add(float64(len(data)))
 		// data is freshly allocated per read, so the room may keep slices of it
 		// and broadcast them without a copy.
 		if err := rm.Deliver(c, data); err != nil {
@@ -214,6 +232,7 @@ func (h *Handler) writePump(c *conn, log *slog.Logger) {
 		// The other order loses the close code: cancelling a read context makes
 		// coder/websocket drop the connection there and then.
 		code, reason := c.closeStatus()
+		h.metrics.CloseCode(int(code))
 		_ = c.ws.Close(code, truncateReason(reason))
 		c.cancel()
 	}()
@@ -267,7 +286,11 @@ func (h *Handler) drain(c *conn, log *slog.Logger) {
 func (h *Handler) write(ctx context.Context, c *conn, frame []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, h.cfg.WriteTimeout)
 	defer cancel()
-	return c.ws.Write(ctx, websocket.MessageBinary, frame)
+	if err := c.ws.Write(ctx, websocket.MessageBinary, frame); err != nil {
+		return err
+	}
+	h.metrics.BytesSent.Add(float64(len(frame)))
+	return nil
 }
 
 // isExpectedClose reports whether an error is just the connection ending.
