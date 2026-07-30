@@ -1,7 +1,10 @@
 # Build the server. Two stages, so what ships is a static binary and nothing
 # else - no toolchain, no module cache, no shell scripts that could drift from
 # the flags cmd/server actually defines.
-FROM golang:1.25-alpine AS build
+# A patch version, not a major line: govulncheck reports standard library
+# advisories against the toolchain that built the binary, and the fix for those
+# is to build with a newer one. Bump this when it reports something.
+FROM golang:1.26.4-alpine AS build
 WORKDIR /src
 
 # Dependencies first, so editing Go files does not re-download the module graph.

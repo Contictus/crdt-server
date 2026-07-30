@@ -1,0 +1,97 @@
+# Alerts for ycollab.
+#
+# Each one is about a thing a person would have to do something about. Counters
+# that are interesting on a dashboard - connection counts, message rates - are
+# deliberately not alerts: paging somebody because traffic changed is how alerts
+# get muted.
+groups:
+  - name: ycollab
+    rules:
+      # Backpressure. The server closes a connection with 1008 when its outbound
+      # queue fills, which is correct behaviour and a bad sign: it means clients
+      # are being disconnected to protect the document.
+      - alert: YcollabDroppingFrames
+        expr: rate(ycollab_frames_dropped_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab is disconnecting clients for backpressure"
+          description: >
+            {{ $labels.instance }} has been dropping frames for five minutes.
+            Each drop closes a connection with 1008. Either a client cannot keep
+            up, or this replica is CPU-bound and its rooms cannot drain their
+            queues.
+
+      # Writes failing means edits exist only in memory and in the clients that
+      # made them. The server says so loudly in its logs; this is the same thing
+      # said to whoever is on call.
+      - alert: YcollabWritesFailing
+        expr: rate(ycollab_store_failed_total[5m]) > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "ycollab cannot write to the database"
+          description: >
+            {{ $labels.op }} has been failing on {{ $labels.instance }}. Updates
+            are still being served from memory, so nothing is lost yet, but a
+            restart now would lose everything since the last successful write.
+
+      # A slow database turns into a stalled document, because the room blocks
+      # once its write queue fills.
+      - alert: YcollabDatabaseSlow
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, op) (rate(ycollab_store_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab's database calls are slow"
+          description: "p99 of {{ $labels.op }} is over a second."
+
+      # Integrating an update is CPU work on an in-memory structure and normally
+      # takes microseconds. A p99 in the tens of milliseconds means either
+      # documents have grown far beyond what anybody edits by hand, or the
+      # process is starved.
+      - alert: YcollabIntegrationSlow
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(ycollab_apply_duration_seconds_bucket[5m]))) > 0.05
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab is slow to integrate updates"
+          description: "p99 apply time is over 50 ms; a healthy server is in the microseconds."
+
+      # Anti-entropy repairs a bus message that was lost. A trickle is the
+      # mechanism working. A sustained stream means messages are being lost
+      # steadily, and clients on different replicas are seeing each other late.
+      - alert: YcollabClusterRepairing
+        expr: rate(ycollab_cluster_answered_state_vector_total[10m]) > 1
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab replicas are repairing each other constantly"
+          description: >
+            Anti-entropy is answering more than one state vector a second, which
+            means the Redis fanout is losing messages rather than delivering
+            them. Check the Redis connection and the replicas' publish errors.
+
+      # A replica that cannot publish is a replica whose clients are invisible
+      # to everybody else.
+      - alert: YcollabClusterPublishFailing
+        expr: rate(ycollab_cluster_publish_failed_total[5m]) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "ycollab cannot publish to the cluster"
+          description: >
+            {{ $labels.instance }} is failing to publish to Redis. Its clients'
+            edits are not reaching the other replicas; they will be repaired by
+            anti-entropy only if the connection comes back.
+
+      - alert: YcollabDown
+        expr: up{job=~"ycollab.*"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "a ycollab replica is not being scraped"

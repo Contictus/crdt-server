@@ -137,6 +137,20 @@ func run() error {
 		}()
 	}
 
+	// Keep the timing map from growing for the length of the run.
+	janitor := time.NewTicker(trackerWindow / 2)
+	defer janitor.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case now := <-janitor.C:
+				tracker.prune(now)
+			}
+		}
+	}()
+
 	editCtx, stopEditing := context.WithTimeout(ctx, opts.duration)
 	var editing sync.WaitGroup
 	started := time.Now()
@@ -163,7 +177,12 @@ func run() error {
 	}
 	running.Wait()
 
-	report(clients, tracker, elapsed, opts, resolution)
+	// The report is also a verdict. A run where updates went missing or
+	// connections failed is a failed run, not an interesting graph, and CI needs
+	// to be told that in the exit code.
+	if !report(clients, tracker, elapsed, opts, resolution) {
+		return errors.New("the run did not deliver everything it sent")
+	}
 	return nil
 }
 
@@ -176,6 +195,27 @@ type tracker struct {
 }
 
 func newTracker() *tracker { return &tracker{sent: make(map[[16]byte]time.Time)} }
+
+// trackerWindow is how long a sent update stays timeable.
+//
+// Without a bound this map is the load bot's own memory leak: at a few thousand
+// updates a second, an hour-long run would hold tens of millions of entries and
+// the generator would start measuring its own garbage collector. Anything that
+// has not arrived within this window is not a latency sample, it is a loss, and
+// the delivered ratio already reports those.
+const trackerWindow = 30 * time.Second
+
+// prune drops entries older than the window. Called on a timer rather than on
+// every insert, so the common path stays one map write.
+func (t *tracker) prune(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, at := range t.sent {
+		if now.Sub(at) > trackerWindow {
+			delete(t.sent, k)
+		}
+	}
+}
 
 func key(update []byte) [16]byte {
 	sum := sha256.Sum256(update)
@@ -394,7 +434,9 @@ func settle(clients []*client, timeout time.Duration) {
 	}
 }
 
-func report(clients []*client, _ *tracker, elapsed time.Duration, opts options, resolution time.Duration) {
+// report prints the run and says whether it was a good one: everything sent
+// was delivered and nothing errored.
+func report(clients []*client, _ *tracker, elapsed time.Duration, opts options, resolution time.Duration) bool {
 	var sent, received, untracked int64
 	var errs int
 	var latencies []time.Duration
@@ -436,7 +478,7 @@ func report(clients []*client, _ *tracker, elapsed time.Duration, opts options, 
 
 	if len(latencies) == 0 {
 		fmt.Println("no latency samples")
-		return
+		return false
 	}
 	slices.Sort(latencies)
 	p50 := percentile(latencies, 0.50)
@@ -455,6 +497,7 @@ func report(clients []*client, _ *tracker, elapsed time.Duration, opts options, 
 	if p99 < resolution {
 		fmt.Printf("                   p99 is below one clock step: this machine cannot measure it more finely\n")
 	}
+	return errs == 0 && received >= expected
 }
 
 // clockResolution measures the smallest step this machine's monotonic clock

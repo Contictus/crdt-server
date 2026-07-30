@@ -1,0 +1,161 @@
+# The checks that have to pass before a change is believed.
+#
+# Postgres and Redis are services rather than mocks, for the same reason the
+# tests are written that way: what is being tested is how this server behaves
+# against the real thing, and a mock only tests the mock.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ycollab
+          POSTGRES_PASSWORD: ycollab
+          POSTGRES_DB: ycollab
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ycollab -d ycollab"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+      redis:
+        image: redis:7-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # A patch release, not a major line: govulncheck reports standard
+          # library advisories, and the fix for those is the toolchain.
+          go-version: "1.26.4"
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+
+      # The race detector is not optional here: the whole design is one actor
+      # goroutine per document with no locks, and that is a claim, not a fact,
+      # until something checks it.
+      - name: test
+        env:
+          YCOLLAB_TEST_DATABASE_URL: postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
+          YCOLLAB_TEST_REDIS_URL: redis://127.0.0.1:6380
+        run: go test -race -count=1 -timeout 900s ./...
+
+  # The wire guarantee is the point of the project, so it is checked on every
+  # change: the Go engine re-encodes every fixture byte for byte, and real Yjs
+  # accepts what it produced.
+  wire:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: install the reference libraries
+        working-directory: tools/fixturegen
+        run: npm ci
+
+      - name: re-encode every fixture with the Go engine
+        run: |
+          mkdir -p /tmp/dump
+          go run ./cmd/ycollab-dump -out /tmp/dump
+
+      - name: apply the Go output in a real Y.Doc
+        run: |
+          failed=0
+          for file in /tmp/dump/*.bin; do
+            name=$(basename "$file" .bin)
+            if ! node tools/verify/apply.mjs --fixture "$name" --update "$file" > /dev/null; then
+              echo "real Yjs rejected $name"
+              failed=1
+            fi
+          done
+          exit $failed
+
+  vulnerabilities:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  # A soak against a real server, short enough to run on every change. The long
+  # one is a manual run; this one exists to catch a fanout or awareness
+  # regression before it reaches a branch.
+  soak:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: install the reference libraries
+        working-directory: tools/fixturegen
+        run: npm ci
+
+      - name: two replicas, real clients across both
+        run: |
+          go build -o /tmp/ycollab-server ./cmd/server
+          /tmp/ycollab-server -addr 127.0.0.1:8081 -admin-addr 127.0.0.1:6081 \
+            -redis-url redis://127.0.0.1:6380 -log-level warn &
+          /tmp/ycollab-server -addr 127.0.0.1:8082 -admin-addr 127.0.0.1:6082 \
+            -redis-url redis://127.0.0.1:6380 -log-level warn &
+          for port in 8081 8082; do
+            until curl -sf "http://127.0.0.1:$port/healthz" > /dev/null; do sleep 1; done
+          done
+          node tools/soak/soak.mjs --clients 4 --duration 20 \
+            --urls ws://127.0.0.1:8081,ws://127.0.0.1:8082 \
+            --stats http://127.0.0.1:6081,http://127.0.0.1:6082
+
+      - name: load
+        run: |
+          go build -o /tmp/ycollab-load ./cmd/ycollab-load
+          /tmp/ycollab-load -url ws://127.0.0.1:8081 -clients 200 -rooms 20 -duration 15s -rate 4

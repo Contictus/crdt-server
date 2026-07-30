@@ -1,0 +1,191 @@
+{
+  "title": "ycollab",
+  "uid": "ycollab",
+  "tags": ["ycollab", "crdt"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus"
+      },
+      {
+        "name": "job",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(ycollab_connections_open, job)",
+        "refresh": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Serving",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Connections",
+      "description": "Open connections per replica. A flat total while the per-replica lines move means clients are reconnecting.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "ycollab_connections_open{job=\"$job\"}", "legendFormat": "{{instance}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "fillOpacity": 10 } } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Resident documents",
+      "description": "Documents held in memory. Bounded by -max-rooms; hitting the cap shows up as joins being refused.",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "ycollab_rooms_resident{job=\"$job\"}", "legendFormat": "{{instance}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Messages in, by type",
+      "description": "sync_step1 is a handshake, so a rate close to the update rate means clients are reconnecting rather than editing.",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (type) (rate(ycollab_messages_received_total{job=\"$job\"}[5m]))", "legendFormat": "{{type}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "row",
+      "title": "Work",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to integrate an update",
+      "description": "CPU work on an in-memory structure. Healthy is microseconds; milliseconds means documents have grown or the process is starved.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ycollab_apply_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ycollab_apply_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Fanout and backpressure",
+      "description": "Frames dropped is not a performance number: every drop closes a client with 1008.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(rate(ycollab_frames_sent_total{job=\"$job\"}[5m]))", "legendFormat": "sent" },
+        { "expr": "sum(rate(ycollab_frames_dropped_total{job=\"$job\"}[5m]))", "legendFormat": "dropped" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "row",
+      "title": "Storage",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Database latency",
+      "description": "A slow database becomes a stalled document: the room blocks once its write queue fills.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, op) (rate(ycollab_store_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p99 {{op}}"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Write failures and compactions",
+      "description": "A failed write means edits exist only in memory and in the clients that made them.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (op) (rate(ycollab_store_failed_total{job=\"$job\"}[5m]))", "legendFormat": "failed {{op}}" },
+        { "expr": "sum(rate(ycollab_compactions_total{job=\"$job\"}[5m]))", "legendFormat": "compactions" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "row",
+      "title": "Cluster",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Bus traffic",
+      "description": "self_filtered is our own messages coming back from Pub/Sub and being dropped: loop prevention working, not a fault. If published grows while nobody is typing, something is looping.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(rate(ycollab_cluster_published_update_total{job=\"$job\"}[5m]))", "legendFormat": "published" },
+        { "expr": "sum(rate(ycollab_cluster_remote_update_applied_total{job=\"$job\"}[5m]))", "legendFormat": "applied from peers" },
+        { "expr": "sum(rate(ycollab_cluster_self_filtered_total{job=\"$job\"}[5m]))", "legendFormat": "own, filtered" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Repairs and losses",
+      "description": "Redis Pub/Sub is at-most-once. A trickle of repairs is the anti-entropy design working; a steady stream means the bus is losing messages.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum(rate(ycollab_cluster_answered_state_vector_total{job=\"$job\"}[5m]))", "legendFormat": "repairs sent" },
+        { "expr": "sum(rate(ycollab_cluster_publish_failed_total{job=\"$job\"}[5m]))", "legendFormat": "publish failed" },
+        { "expr": "sum(rate(ycollab_cluster_publish_dropped_total{job=\"$job\"}[5m]))", "legendFormat": "publish dropped" },
+        { "expr": "sum(rate(ycollab_cluster_remote_dropped_total{job=\"$job\"}[5m]))", "legendFormat": "inbound dropped" },
+        { "expr": "sum(rate(ycollab_cluster_remote_rejected_total{job=\"$job\"}[5m]))", "legendFormat": "rejected" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "row",
+      "title": "Refusals",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Refused, by reason",
+      "description": "unauthorized is a bad or missing token; read_only is a viewer trying to edit; too_many_connections is the node at its cap.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (reason) (rate(ycollab_denied_total{job=\"$job\"}[5m]))", "legendFormat": "{{reason}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Connections closed, by code",
+      "description": "1001 is a shutdown, 1002 a protocol error, 1008 backpressure or a refused write, 1011 a document that could not be served.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (code) (rate(ycollab_connections_closed_total{job=\"$job\"}[5m]))", "legendFormat": "{{code}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    }
+  ]
+}

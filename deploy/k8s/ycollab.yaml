@@ -1,0 +1,216 @@
+# A running deployment of ycollab.
+#
+#   kubectl apply -f deploy/k8s/ycollab.yaml
+#
+# Postgres and Redis are expected to exist already and to be named by the
+# Secret below: this file deploys the server, not a database. Running a
+# production Postgres from a YAML file in an application's repository is how
+# people lose data.
+#
+# The shape follows from what the server is. Replicas are interchangeable, so
+# this is a plain Deployment with no ordinals and no sticky sessions - a client
+# reconnecting to a different pod costs one state vector diff. The admin port is
+# never named in the Service, so /debug/pprof and /metrics are reachable from
+# inside the cluster and from nowhere else.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ycollab
+
+---
+# The two things this deployment cannot invent for itself. Create it with real
+# values before applying the rest:
+#
+#   kubectl -n ycollab create secret generic ycollab \
+#     --from-literal=database-url='postgres://user:pass@postgres:5432/ycollab' \
+#     --from-literal=redis-url='redis://redis:6379' \
+#     --from-literal=jwt-secret="$(go run ./cmd/ycollab-token -gen-secret)"
+#
+# It is here as a placeholder so that `kubectl apply` of this file alone does
+# not silently start an open server with no persistence.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ycollab
+  namespace: ycollab
+type: Opaque
+stringData:
+  database-url: "postgres://ycollab:ycollab@postgres:5432/ycollab"
+  redis-url: "redis://redis:6379"
+  # Replace this. A server started with a secret from a git repository is an
+  # open server with extra steps.
+  jwt-secret: "replace-me-with-at-least-32-random-bytes"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ycollab
+  namespace: ycollab
+  labels: { app: ycollab }
+spec:
+  replicas: 3
+  selector:
+    matchLabels: { app: ycollab }
+  template:
+    metadata:
+      labels: { app: ycollab }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "6060"
+        prometheus.io/path: "/metrics"
+    spec:
+      # A pod being replaced holds WebSocket connections that are worth closing
+      # properly: the server drains its listener and sends 1001, and clients
+      # reconnect to another pod with a diff rather than a full resync.
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+        - name: server
+          image: ycollab:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - -addr=:8080
+            # Bound to all interfaces because "localhost" in a pod means the
+            # pod; the Service below is what keeps it private.
+            - -admin-addr=:6060
+            # -origins, -database-url, -redis-url and -jwt-secret all come from
+            # the environment below: the server reads YCOLLAB_* as each flag's
+            # default, so a secret never appears in a pod's command line, where
+            # `kubectl describe` and /debug/pprof/cmdline would both show it.
+            #
+            # Bounds, because a pod has a memory limit and nothing else in the
+            # server caps how many documents or connections it will hold.
+            - -max-rooms=2000
+            - -max-conns=5000
+            - -log-level=info
+          env:
+            - name: YCOLLAB_ORIGINS
+              value: "app.example.com"
+            - name: YCOLLAB_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: ycollab, key: database-url } }
+            - name: YCOLLAB_REDIS_URL
+              valueFrom: { secretKeyRef: { name: ycollab, key: redis-url } }
+            - name: YCOLLAB_JWT_SECRET
+              valueFrom: { secretKeyRef: { name: ycollab, key: jwt-secret } }
+          ports:
+            - { name: ws, containerPort: 8080 }
+            - { name: admin, containerPort: 6060 }
+          # Readiness gates traffic; liveness restarts. They point at different
+          # ports on purpose: readiness asks the port clients use, because that
+          # is what the question is about.
+          readinessProbe:
+            httpGet: { path: /healthz, port: ws }
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: admin }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits: { memory: "1Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+
+---
+# Only the client port is published. The admin port is deliberately absent:
+# that is what keeps /debug/pprof - which dumps the heap and will stall the
+# process for a profile - off the network.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ycollab
+  namespace: ycollab
+  labels: { app: ycollab }
+spec:
+  selector: { app: ycollab }
+  ports:
+    - { name: ws, port: 80, targetPort: ws }
+
+---
+# A headless Service for the admin port, so Prometheus can scrape pods directly
+# without the port being routable as a normal Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ycollab-admin
+  namespace: ycollab
+  labels: { app: ycollab }
+spec:
+  clusterIP: None
+  selector: { app: ycollab }
+  ports:
+    - { name: admin, port: 6060, targetPort: admin }
+
+---
+# WebSocket connections are long-lived, so the ingress must not impose a read
+# timeout on them. The annotations here are nginx's; another controller needs
+# its own equivalents, and getting this wrong shows up as every client
+# reconnecting exactly every 60 seconds.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ycollab
+  namespace: ycollab
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  rules:
+    - host: collab.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ycollab
+                port: { name: ws }
+
+---
+# Scaling on CPU rather than on connection count: a connection that nobody is
+# typing into costs almost nothing, so connection count is a poor signal of
+# load, while integrating updates and fanning them out is what actually burns a
+# core.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ycollab
+  namespace: ycollab
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ycollab
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+  behavior:
+    scaleDown:
+      # Scaling down disconnects people. Slowly, and only when the load has
+      # genuinely gone.
+      stabilizationWindowSeconds: 300
+
+---
+# Losing every replica at once would disconnect everybody at once. They would
+# all reconnect, but a node drain should not do that.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ycollab
+  namespace: ycollab
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: ycollab }
