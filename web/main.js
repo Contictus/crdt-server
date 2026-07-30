@@ -21,11 +21,21 @@ const colors = ['#ff8800', '#0088ff', '#22aa55', '#cc3366', '#8855dd', '#00a2a2'
 const pick = (xs) => xs[Math.floor(Math.random() * xs.length)]
 const user = { name: pick(names), color: pick(colors) }
 
+// A token, when the server was started with -jwt-secret. It comes from the
+// query string - open the page as ?token=... - and y-websocket puts it back on
+// the WebSocket URL through its params option, which is the only place a browser
+// can carry one: the WebSocket API has no way to set a header.
+//
+// Mint one with:
+//   go run ./cmd/ycollab-token -secret "$YCOLLAB_JWT_SECRET" -doc demo -perm write
+const token = new URLSearchParams(location.search).get('token')
+
 const doc = new Y.Doc()
 const provider = new WebsocketProvider(serverUrl, room, doc, {
   // Two tabs of the same browser would otherwise sync directly through
   // BroadcastChannel, which would demo the browser rather than the server.
-  disableBc: true
+  disableBc: true,
+  params: token ? { token } : {}
 })
 
 const editor = new Editor({

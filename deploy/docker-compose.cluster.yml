@@ -52,6 +52,11 @@ services:
       - -database-url=postgres://ycollab:ycollab@postgres:5432/ycollab
       - -redis-url=redis://redis:6379
       - -log-level=info
+      # No -jwt-secret, so this deployment is open: it exists to demonstrate the
+      # fanout, and a secret checked in here would be a secret in a git history.
+      # To require tokens, give every replica the same one - they all verify the
+      # same signature, which is what lets a client reconnect to any of them:
+      #   - -jwt-secret=${YCOLLAB_JWT_SECRET}
     depends_on:
       postgres:
         condition: service_healthy

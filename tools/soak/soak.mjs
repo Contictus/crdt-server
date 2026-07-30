@@ -38,6 +38,7 @@ const usage = `usage: node soak.mjs [options]
   --urls A,B,C    several servers; clients are spread over them round-robin
   --stats A,B,C   http endpoints to read /statsz from, one per replica
   --room NAME     document name (default soak-<timestamp>)
+  --token TOKEN   JWT to present, when the server requires one
   --interval MS   milliseconds between one client's edits (default 25)
   --seed N        PRNG seed, for a reproducible run (default 1)
   --churn         disconnect and reconnect one client periodically (default on)
@@ -52,6 +53,7 @@ const parseArgs = (argv) => {
     urls: ['ws://127.0.0.1:8080'],
     stats: [],
     room: `soak-${Date.now()}`,
+    token: '',
     interval: 25,
     seed: 1,
     churn: true,
@@ -71,6 +73,7 @@ const parseArgs = (argv) => {
       case '--urls': opts.urls = next().split(',').filter(Boolean); break
       case '--stats': opts.stats = next().split(',').filter(Boolean); break
       case '--room': opts.room = next(); break
+      case '--token': opts.token = next(); break
       case '--interval': opts.interval = Number(next()); break
       case '--seed': opts.seed = Number(next()); break
       case '--churn': opts.churn = true; break
@@ -117,7 +120,8 @@ class Client {
       // Without this, clients in one Node process would sync through
       // BroadcastChannel and the server could be broken without the test
       // noticing. The whole point is to exercise the server.
-      disableBc: true
+      disableBc: true,
+      params: this.opts.token ? { token: this.opts.token } : {}
     })
     this.provider.awareness.setLocalStateField('user', {
       name: this.label,
