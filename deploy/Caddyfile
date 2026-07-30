@@ -1,0 +1,25 @@
+# Caddy in front of the replicas.
+#
+# There is no sticky session and no session affinity, deliberately: the point of
+# Phase 4 is that any replica can serve any document, so a load balancer that
+# pinned a client to one would hide the very thing this deployment exists to
+# prove. A client that reconnects lands wherever it lands and resyncs from its
+# state vector.
+{
+	admin off
+	auto_https off
+}
+
+:8080 {
+	# WebSocket needs no special handling here: Caddy's reverse_proxy forwards the
+	# upgrade, and the connection then stays open. What it does need is no write
+	# timeout, which is Caddy's default.
+	reverse_proxy ycollab-1:8080 ycollab-2:8080 ycollab-3:8080 {
+		lb_policy round_robin
+		# A replica that is restarting should be skipped rather than handed a
+		# connection that dies immediately.
+		health_uri /healthz
+		health_interval 2s
+		health_timeout 2s
+	}
+}

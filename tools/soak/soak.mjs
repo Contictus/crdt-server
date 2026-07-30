@@ -12,6 +12,15 @@
  *   node tools/soak/soak.mjs --clients 6 --duration 300
  *   node tools/soak/soak.mjs --clients 4 --duration 10    # development run
  *
+ * With --urls it is also the Phase 4 criterion: the clients are spread over
+ * several replicas, so every edit has to cross Redis to be seen, and --stats
+ * reads each replica's counters to show that no update looped.
+ *
+ *   docker compose -f deploy/docker-compose.cluster.yml up -d --build
+ *   node tools/soak/soak.mjs --clients 6 --duration 300 \
+ *     --urls ws://127.0.0.1:8081,ws://127.0.0.1:8082,ws://127.0.0.1:8083 \
+ *     --stats http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083
+ *
  * Exit code 0 = every client converged, 1 = divergence or setup failure.
  *
  * yjs is imported through tools/fixturegen/dump.mjs and y-websocket from the
@@ -26,6 +35,8 @@ const usage = `usage: node soak.mjs [options]
   --clients N     concurrent editors (default 6)
   --duration S    seconds of editing (default 300)
   --url URL       server (default ws://127.0.0.1:8080)
+  --urls A,B,C    several servers; clients are spread over them round-robin
+  --stats A,B,C   http endpoints to read /statsz from, one per replica
   --room NAME     document name (default soak-<timestamp>)
   --interval MS   milliseconds between one client's edits (default 25)
   --seed N        PRNG seed, for a reproducible run (default 1)
@@ -38,7 +49,8 @@ const parseArgs = (argv) => {
   const opts = {
     clients: 6,
     duration: 300,
-    url: 'ws://127.0.0.1:8080',
+    urls: ['ws://127.0.0.1:8080'],
+    stats: [],
     room: `soak-${Date.now()}`,
     interval: 25,
     seed: 1,
@@ -55,7 +67,9 @@ const parseArgs = (argv) => {
     switch (arg) {
       case '--clients': opts.clients = Number(next()); break
       case '--duration': opts.duration = Number(next()); break
-      case '--url': opts.url = next(); break
+      case '--url': opts.urls = [next()]; break
+      case '--urls': opts.urls = next().split(',').filter(Boolean); break
+      case '--stats': opts.stats = next().split(',').filter(Boolean); break
       case '--room': opts.room = next(); break
       case '--interval': opts.interval = Number(next()); break
       case '--seed': opts.seed = Number(next()); break
@@ -67,6 +81,7 @@ const parseArgs = (argv) => {
     }
   }
   if (!(opts.clients >= 2)) throw new Error('--clients must be at least 2')
+  if (opts.urls.length === 0) throw new Error('at least one --url is needed')
   return opts
 }
 
@@ -84,10 +99,13 @@ const hex = (bytes) => Buffer.from(bytes).toString('hex')
 const alphabet = 'abcdefghijklmnopqrstuvwxyz '
 
 class Client {
-  constructor (label, opts, rng) {
+  constructor (label, opts, rng, url) {
     this.label = label
     this.opts = opts
     this.rng = rng
+    // Which replica this client talks to. With several, neighbouring clients
+    // land on different ones, so every edit has to cross the cluster to be seen.
+    this.url = url
     this.doc = new Y.Doc()
     this.text = this.doc.getText('content')
     this.ops = 0
@@ -95,7 +113,7 @@ class Client {
   }
 
   connect () {
-    this.provider = new WebsocketProvider(this.opts.url, this.opts.room, this.doc, {
+    this.provider = new WebsocketProvider(this.url, this.opts.room, this.doc, {
       // Without this, clients in one Node process would sync through
       // BroadcastChannel and the server could be broken without the test
       // noticing. The whole point is to exercise the server.
@@ -186,6 +204,52 @@ const waitForQuiescence = async (clients, timeoutMs, log) => {
   return false
 }
 
+/** Reads /statsz from every replica and sums the counters. */
+const clusterTotals = async (endpoints) => {
+  const totals = {}
+  for (const endpoint of endpoints) {
+    const resp = await fetch(new URL('/statsz', endpoint))
+    if (!resp.ok) throw new Error(`${endpoint}/statsz: ${resp.status}`)
+    const body = await resp.json()
+    for (const [name, value] of Object.entries(body.cluster ?? {})) {
+      totals[name] = (totals[name] ?? 0) + value
+    }
+  }
+  return totals
+}
+
+/**
+ * Checks the cluster's own account of what it did.
+ *
+ * The claim being tested is the Phase 4 acceptance criterion's second half:
+ * origin filtering keeps update loops at zero. With the clients quiet, update
+ * traffic between replicas has to stop entirely. Anti-entropy announcements
+ * carry on - that is what they are for - so only the update counters are held
+ * still.
+ */
+const checkNoLoops = async (endpoints, log) => {
+  const before = await clusterTotals(endpoints)
+  await sleep(3000)
+  const after = await clusterTotals(endpoints)
+  log(`cluster: ${before.published_update ?? 0} updates published, ` +
+      `${before.self_filtered ?? 0} own envelopes filtered, ` +
+      `${before.published_diff ?? 0} repair diffs, ` +
+      `${before.answered_state_vector ?? 0} state vectors answered`)
+  for (const name of ['published_update', 'published_diff']) {
+    if ((after[name] ?? 0) !== (before[name] ?? 0)) {
+      console.error(`${name} grew from ${before[name]} to ${after[name]} with nobody typing: updates are looping`)
+      return false
+    }
+  }
+  for (const name of ['remote_dropped', 'publish_dropped', 'publish_failed', 'remote_rejected']) {
+    if ((after[name] ?? 0) !== 0) {
+      console.error(`${name} is ${after[name]}: the cluster lost or refused traffic`)
+      return false
+    }
+  }
+  return true
+}
+
 /** Waits for every client to see the same number of peers. */
 const waitForAwareness = async (clients, want, timeoutMs) => {
   const deadline = Date.now() + timeoutMs
@@ -203,11 +267,15 @@ const main = async () => {
   const log = opts.quiet ? () => {} : (...args) => console.log(...args)
   const rng = mulberry32(opts.seed)
 
-  log(`soak: ${opts.clients} clients, ${opts.duration}s, ${opts.url}/${opts.room}`)
+  log(`soak: ${opts.clients} clients, ${opts.duration}s, ${opts.urls.join(' ')} room ${opts.room}`)
 
   const clients = []
   for (let i = 0; i < opts.clients; i++) {
-    clients.push(new Client(String.fromCharCode(97 + i), opts, mulberry32(opts.seed * 1000 + i)))
+    const url = opts.urls[i % opts.urls.length]
+    clients.push(new Client(String.fromCharCode(97 + i), opts, mulberry32(opts.seed * 1000 + i), url))
+  }
+  if (opts.urls.length > 1) {
+    log(`  ${clients.map((c) => `${c.label}=${c.url}`).join(' ')}`)
   }
 
   const connectDeadline = sleep(15000).then(() => { throw new Error('timed out waiting for the initial sync') })
@@ -292,6 +360,10 @@ const main = async () => {
   }
 
   for (const t of cursors) clearInterval(t)
+
+  if (opts.stats.length > 0 && !(await checkNoLoops(opts.stats, log))) {
+    failed = true
+  }
 
   for (const c of clients) c.destroy()
   process.exit(failed ? 1 : 0)
