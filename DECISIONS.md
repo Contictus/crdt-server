@@ -327,6 +327,103 @@ them once the transaction lands. Rejected: keeping the range and taking a heavie
 append path, which would put contention on the hot path to protect an operation that runs once
 per 500 updates. Resolves [C6].
 
+### D43. The bus carries envelopes, not bare updates
+Every message between replicas is `varUint(version) varUint(origin) varUint(kind)
+varUint8Array(payload)`, encoded with our own lib0. The origin is what makes loop prevention
+possible at all, the kind is what lets one channel carry updates, awareness and anti-entropy,
+and the version is what makes a rolling restart legible instead of mysterious. Rejected:
+publishing the raw update bytes to a channel per kind, which saves a few bytes and gives up the
+origin - and without an origin, Pub/Sub delivering to the publisher means either a hop count or
+a permanent echo. Rejected also: JSON, which would put a second serialisation format in a
+project whose first one is tested byte for byte against real Yjs.
+
+### D44. Loops are prevented by origin, at the subscriber
+A replica drops any envelope carrying its own node id, and never publishes anything that came
+off the bus. Together those two rules make a message cross the cluster exactly once, whatever
+the cluster size, which is the property the Phase 4 acceptance criterion asks for a counter to
+prove: with the clients quiet, update traffic goes to zero, and the counters say so on /statsz.
+Rejected: a hop count or TTL, which bounds a loop instead of preventing it and needs tuning per
+topology. Not available: not receiving your own publishes - Redis Pub/Sub has no such option.
+
+### D45. The node id is random, not configured
+64 bits from crypto/rand, masked to the 53 lib0's varUint can carry. Rejected: deriving it from
+the hostname, pod name or replica index, all of which are one misconfiguration away from two
+replicas sharing an id - at which point each ignores the other's traffic and the two diverge in
+a way that looks exactly like a CRDT bug. Zero is reserved, so an unset field cannot be mistaken
+for a valid id.
+
+### D46. One multiplexed subscriber connection, not one per room
+The Redis bus keeps a single subscriber connection and demultiplexes by channel name, adding
+and removing channels as rooms come and go. Rejected: a subscription per room, which is simpler
+to write and costs a Redis connection per resident document - a limit nobody wants to discover
+during an incident, and one that would interact badly with the resident-room cap ([D39]).
+
+### D47. Subscribing waits for Redis to confirm it
+Found by the integration test, which failed immediately and consistently: `PubSub.Subscribe`
+returns once the command has been written, so a publish issued straight afterwards can reach
+Redis before the subscription exists and be delivered to nobody. For a room that is precisely
+the case that matters - it subscribes, then serves a client whose first edit must not vanish -
+so the bus now waits for the server's subscription confirmation, which arrives on the receive
+loop as a `*redis.Subscription`. That is also why the loop calls `Receive` rather than
+`ReceiveMessage`: the latter swallows exactly the message being waited for. Rejected: sleeping.
+Rejected: accepting the loss on the grounds that anti-entropy would repair it, which trades a
+correctness property for the absence of ten lines.
+
+### D48. An update is written by the replica whose client authored it
+Remote updates are applied and relayed to local clients but not appended to the log. Every
+update is therefore in the log exactly once, from its origin. Rejected: having every replica
+write everything, which multiplies the write rate and the log size by the replica count to
+protect against a case - the origin dying inside its flush window - that the client's own
+reconnect already covers ([D37]). This is also the point where [D41] stops being a nicety: with
+two replicas appending to one document, a compaction that deleted a *range* would delete rows
+the other replica had written and this one had never seen.
+
+### D49. Anti-entropy is a periodic state vector, answered with a diff
+A room with connections publishes its state vector every 15 s; a replica that sees one computes
+`EncodeDiff` against it and publishes the difference, or nothing at all when there is none.
+This is the `SyncStep1`/`SyncStep2` exchange the clients already perform, run between replicas
+on a timer, and it is what makes an at-most-once bus safe to build on. Resolves [C1].
+Rejected: reconciling once when a room is created, which fixes a restarting replica and not a
+dropped message, and which [C7] rules out anyway - one exchange is not a fixed point. Rejected:
+Redis Streams, which would give at-least-once delivery and take back consumer groups, trimming
+and a second failure mode; the periodic exchange costs one short message per room per replica
+and repairs everything, including whatever a Streams consumer would still have missed.
+
+### D50. A timeout is local; a disconnect is published
+When a connection leaves, its awareness retraction goes out on the bus, so the cursor
+disappears everywhere at once. When the awareness sweep times a client out, it does not: a
+timeout is this replica's conclusion drawn from its own silence, and the replica the client is
+actually connected to is the one that knows better. Publishing sweeps would let a node with a
+slow bus connection delete live cursors across the cluster.
+
+### D51. Publishing is off the room goroutine, and drops rather than blocks
+The room hands envelopes to a bounded queue drained by a publisher goroutine, and the bus hands
+envelopes to a bounded per-room queue drained by the room. Neither side ever blocks the other:
+a document must not wait for the network, and one busy document must not stall every other
+document on the node. Both queues drop and count when full, which is honest - the next
+anti-entropy round repairs the loss - and both counters are on /statsz, so a node under that
+much pressure is not silent about it. Rejected: blocking, which is what the *persistence* queue
+does ([D36]) and is right there, because losing a write is unrecoverable while losing a fanout
+message is not.
+
+### D52. A room that cannot join the bus refuses to serve
+If the subscription fails, the room closes with 1011 instead of starting. Rejected: serving
+anyway, which produces the worst failure this system has - a document that looks fine, accepts
+edits, and silently ignores everyone on the other replicas. Failing makes the client reconnect,
+probably to a replica that is healthy.
+
+### D53. /statsz is JSON, and deliberately small
+The cluster counters are exposed as a flat JSON object. Prometheus is Phase 6 and this is not a
+substitute for it: it exists because the Phase 4 criterion is about numbers a test has to read,
+and a test that has to parse an exposition format to learn whether updates looped is a test
+nobody writes.
+
+### D54. Caddy does not pin a client to a replica
+No sticky sessions, no affinity. The point of this phase is that any replica can serve any
+document, so a load balancer that pinned clients would hide the very thing the deployment
+exists to demonstrate. A client that reconnects lands wherever it lands and resyncs from its
+state vector, which costs one diff.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an
@@ -679,17 +776,23 @@ concurrent same-position inserts — which is why `text-concurrent-same-index` a
 
 ## Part 3 — Open concerns (brief rule 7)
 
-### C1. Redis Pub/Sub is at-most-once, and nothing else heals a missed update
+### C1. Redis Pub/Sub is at-most-once, and nothing else heals a missed update - resolved
 The architecture has no document ownership, which is right for CRDTs, but it makes fanout the
 only path by which replica A learns about replica B's writes. Redis Pub/Sub drops messages on
 subscriber disconnect or slow-consumer buffer overflow with no retransmit. A replica that
-misses one message serves a permanently stale document to its clients: origin filtering does
-not help, and the clients have no reason to reconnect.
+misses one message would serve a permanently stale document to its clients: origin filtering
+does not help, and the clients have no reason to reconnect.
 
-Proposed fix at Phase 4, using machinery we already have: periodic per-room anti-entropy —
-each replica publishes its state vector for active rooms every N seconds, and peers reply with
-`Y.diffUpdate` against it. Same code path as `SyncStep1`/`SyncStep2`, bounded cost, self-healing.
-Decision deferred to Phase 4; flagging now because it affects the fanout message schema.
+Resolved by periodic anti-entropy ([D49]): a room with connections announces its state vector
+every 15 s, and any replica holding more answers with the difference. Convergence is therefore
+eventual with a bounded delay rather than immediate, which is the honest guarantee an
+at-most-once bus can support. The integration test drives the loss directly - it edits a
+document on one replica while a second replica has no room for that document at all - and the
+second replica catches up with no database involved.
+
+This project's own drop paths ([D51]) rely on the same mechanism, and so does the window
+between a replica subscribing and finishing its load. That window is also why the subscription
+is taken out before the document is read rather than after.
 
 ### C5. A pending deletion is invisible to peers until its structs arrive — resolved
 Found by the convergence property test, not by reading the source. If replica A receives a
