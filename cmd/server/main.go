@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/mesutokul/ycollab/internal/auth"
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/gateway"
 	"github.com/mesutokul/ycollab/internal/room"
@@ -56,6 +57,11 @@ func run() error {
 		redisPrefix = flag.String("redis-prefix", envOr("YCOLLAB_REDIS_PREFIX", cluster.DefaultPrefix), "namespace for the Redis channel names")
 		antiEntropy = flag.Duration("anti-entropy", room.DefaultAntiEntropy, "how often a room announces its state vector to the other replicas")
 		tick        = flag.Duration("tick", room.DefaultTick, "how often a room checks awareness timeouts, idleness and whether it owes an announcement")
+
+		jwtSecret        = flag.String("jwt-secret", os.Getenv("YCOLLAB_JWT_SECRET"), "HS256 signing secret; empty leaves the server open to anyone who can reach it. Several may be given, comma-separated, while a key is being rotated")
+		jwtLeeway        = flag.Duration("jwt-leeway", auth.DefaultLeeway, "clock skew allowed between whatever mints tokens and this server")
+		jwtMaxLifetime   = flag.Duration("jwt-max-lifetime", 0, "reject tokens valid for longer than this; 0 accepts any expiry")
+		jwtRequireExpiry = flag.Bool("jwt-require-expiry", true, "reject tokens that never expire")
 	)
 	flag.Parse()
 
@@ -125,6 +131,15 @@ func run() error {
 		log.Info("joined the cluster", "node_id", manager.NodeID(), "anti_entropy", *antiEntropy)
 	}
 
+	authorize, err := authorizer(*jwtSecret, auth.Config{
+		Leeway:        *jwtLeeway,
+		MaxLifetime:   *jwtMaxLifetime,
+		RequireExpiry: *jwtRequireExpiry,
+	}, log)
+	if err != nil {
+		return err
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -146,9 +161,10 @@ func run() error {
 		}
 	})
 	mux.Handle("/", gateway.New(gateway.Config{
-		Rooms:   manager,
-		Origins: splitList(*origins),
-		Logger:  log,
+		Rooms:     manager,
+		Origins:   splitList(*origins),
+		Authorize: authorize,
+		Logger:    log,
 	}))
 
 	srv := &http.Server{
@@ -190,6 +206,38 @@ func run() error {
 		return shutdownErr
 	}
 	return nil
+}
+
+// authorizer builds the gateway's authorisation hook from the configured
+// secrets, or returns nil when there are none.
+//
+// Nil means open, and the server says so loudly at startup. That is the right
+// default for a server you are running on your laptop to try the demo, and the
+// wrong one everywhere else, which is why it is a warning rather than silence.
+func authorizer(secrets string, cfg auth.Config, log *slog.Logger) (func(*http.Request, string) (gateway.Grant, error), error) {
+	if secrets == "" {
+		log.Warn("no -jwt-secret: every client may read and write every document")
+		return nil, nil
+	}
+	for _, s := range splitList(secrets) {
+		cfg.Secrets = append(cfg.Secrets, []byte(s))
+	}
+	verifier, err := auth.NewVerifier(cfg)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("requiring signed tokens", "keys", len(cfg.Secrets), "require_expiry", cfg.RequireExpiry)
+
+	return func(r *http.Request, doc string) (gateway.Grant, error) {
+		grant, err := verifier.Verify(auth.TokenFromRequest(r), doc)
+		if err != nil {
+			// The error text goes to the client. auth's errors are written to be
+			// said out loud: they name what is wrong with the token and nothing
+			// about the key or the check.
+			return gateway.Grant{}, err
+		}
+		return gateway.Grant{Subject: grant.Subject, Write: grant.Write}, nil
+	}, nil
 }
 
 func envOr(key, fallback string) string {
