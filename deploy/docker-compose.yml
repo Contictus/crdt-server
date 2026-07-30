@@ -2,11 +2,15 @@
 #
 #   docker compose -f deploy/docker-compose.yml up -d
 #   export YCOLLAB_TEST_DATABASE_URL=postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
-#   go test ./internal/store/...
+#   export YCOLLAB_TEST_REDIS_URL=redis://127.0.0.1:6380
+#   go test ./internal/store/... ./internal/cluster/...
 #
-# Port 5433 on purpose: a developer machine often already has a Postgres on
-# 5432, and silently sharing it with one is how a test suite ends up truncating
-# somebody's real database.
+# For the three-replica cluster the Phase 4 acceptance criterion is measured on,
+# see docker-compose.cluster.yml.
+#
+# Non-default ports on purpose: a developer machine often already has a Postgres
+# on 5432 or a Redis on 6379, and silently sharing one is how a test suite ends
+# up truncating somebody's real database.
 services:
   postgres:
     image: postgres:17-alpine
@@ -25,3 +29,17 @@ services:
       # The data is disposable: this is for tests and local development, and a
       # tmpfs makes the integration tests noticeably quicker.
       - /var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    # No persistence: the bus carries nothing that matters after the fact. A
+    # message is either delivered now or repaired by anti-entropy, so an AOF
+    # would only cost disk.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
