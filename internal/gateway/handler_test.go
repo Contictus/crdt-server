@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -415,4 +416,45 @@ func singleEntry(client, clock uint64, state string) []byte {
 	e.WriteVarUint(clock)
 	e.WriteVarString(state)
 	return e.Bytes()
+}
+
+// The connection cap is the only thing bounding what a node will hold: a
+// connection costs two goroutines, a 256-frame queue and a room, and an open
+// server has no other limit.
+func TestConnectionsAreCapped(t *testing.T) {
+	srv := newServer(t, gateway.Config{MaxConns: 2})
+
+	first := dial(t, srv, "doc")
+	first.send(protocol.WriteSyncStep1(emptyStateVector(t)))
+	first.recv()
+	second := dial(t, srv, "doc")
+	second.send(protocol.WriteSyncStep1(emptyStateVector(t)))
+	second.recv()
+
+	// The third is refused before the upgrade, so it never becomes a WebSocket.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, resp, err := websocket.Dial(ctx, strings.Replace(srv.URL, "http://", "ws://", 1)+"/doc", nil)
+	if err == nil {
+		ws.CloseNow()
+		t.Fatal("a connection past the cap was accepted")
+	}
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("refused with %v, want 503", resp)
+	}
+
+	// And once one goes, there is room again.
+	first.ws.Close(websocket.StatusNormalClosure, "")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		ws, _, err := websocket.Dial(ctx, strings.Replace(srv.URL, "http://", "ws://", 1)+"/doc", nil)
+		if err == nil {
+			ws.CloseNow()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the slot was never released: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

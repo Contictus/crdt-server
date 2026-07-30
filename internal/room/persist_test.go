@@ -347,3 +347,60 @@ func TestWriteFailureKeepsServing(t *testing.T) {
 func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError + 1}))
 }
+
+// Durable writes close the flush window: the update is on disk before the room
+// relays it, so a crash cannot lose an edit a client believes landed.
+func TestDurableWritesLandBeforeTheUpdateIsRelayed(t *testing.T) {
+	store := &fakeStore{}
+	r := runRoom(t, Config{
+		Store: store,
+		// Negative means write-through.
+		FlushInterval: -1,
+		// A flush interval that would otherwise hide the difference.
+		CompactAfter: 1000,
+	})
+
+	author := &fakeConn{id: 1}
+	peer := &fakeConn{id: 2}
+	if err := r.Join(author); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Join(peer); err != nil {
+		t.Fatal(err)
+	}
+
+	update := readFixture(t, "text-insert-single", "update-000.bin")
+	if err := r.Deliver(author, protocol.WriteUpdate(update)); err != nil {
+		t.Fatal(err)
+	}
+
+	// The peer receiving it is the point at which a user believes the edit
+	// exists, so by then it must already be written.
+	eventually(t, "the peer to receive the update", func() bool {
+		return len(peer.frames()) > 0
+	})
+	appended, _ := store.counts()
+	if appended != 1 {
+		t.Fatalf("%d updates were written by the time the peer saw it, want 1", appended)
+	}
+}
+
+// And the batching default still batches, or durable writes would not be a
+// choice at all.
+func TestTheDefaultBatchesRatherThanWritingThrough(t *testing.T) {
+	store := &fakeStore{}
+	r := runRoom(t, Config{Store: store, FlushInterval: time.Hour, CompactAfter: 1000})
+
+	author := &fakeConn{id: 1}
+	if err := r.Join(author); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Deliver(author, protocol.WriteUpdate(readFixture(t, "text-insert-single", "update-000.bin"))); err != nil {
+		t.Fatal(err)
+	}
+	// Give the writer a chance to do the wrong thing.
+	time.Sleep(50 * time.Millisecond)
+	if appended, _ := store.counts(); appended != 0 {
+		t.Fatalf("%d updates were written with an hour-long flush interval", appended)
+	}
+}

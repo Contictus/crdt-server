@@ -176,6 +176,29 @@ func (m *Manager) forget(name string, r *Room) {
 	}
 }
 
+// Evict stops the named room if it is resident and nobody is connected to it,
+// and reports whether the document is now out of memory.
+//
+// A room with connections is left alone and reports false: the caller wants the
+// document gone, and disconnecting people who are editing to achieve that is a
+// decision for whoever asked, not for the registry. Not being resident at all
+// counts as success.
+func (m *Manager) Evict(name string) bool {
+	m.mu.Lock()
+	r, ok := m.rooms[name]
+	m.mu.Unlock()
+	if !ok {
+		return true
+	}
+	if !r.EvictIfIdle() {
+		return false
+	}
+	// The room writes itself out as it stops, so waiting here means a caller
+	// that deletes afterwards is not racing a snapshot.
+	<-r.Done()
+	return true
+}
+
 // Stats returns the counters shared by every room this manager owns.
 func (m *Manager) Stats() *Stats { return m.cfg.Room.Stats }
 

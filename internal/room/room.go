@@ -114,7 +114,9 @@ func (c *Config) setDefaults() {
 	if c.CompactAfter <= 0 {
 		c.CompactAfter = DefaultCompactAfter
 	}
-	if c.FlushInterval <= 0 {
+	// A negative interval means durable writes, so only zero - the unset value -
+	// takes the default.
+	if c.FlushInterval == 0 {
 		c.FlushInterval = DefaultFlushInterval
 	}
 	if c.AntiEntropy <= 0 {

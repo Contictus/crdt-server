@@ -39,6 +39,10 @@ type persistJob struct {
 	payload []byte
 	// snapshot is the full document state to write, when this is a compaction.
 	snapshot []byte
+	// done, when set, is closed once this job has been written. It is what
+	// makes durable writes durable: the room waits on it before relaying the
+	// update, so a client is never told about an edit that is not on disk.
+	done chan struct{}
 }
 
 // load restores the document from the database: the snapshot, then every log
@@ -92,7 +96,18 @@ func (r *Room) record(update []byte) {
 	// batch is flushed, so it is copied rather than shared.
 	payload := make([]byte, len(update))
 	copy(payload, update)
-	r.jobs <- persistJob{payload: payload}
+
+	if r.cfg.FlushInterval < 0 {
+		// Durable writes: hand the update over and wait for it to be written
+		// before returning, so it is on disk before anybody is told about it.
+		// This blocks the room, which is the whole cost of the option - every
+		// keystroke now pays a database round trip.
+		done := make(chan struct{})
+		r.jobs <- persistJob{payload: payload, done: done}
+		<-done
+	} else {
+		r.jobs <- persistJob{payload: payload}
+	}
 
 	r.sinceSnapshot++
 	if r.sinceSnapshot >= r.cfg.CompactAfter {
@@ -133,7 +148,18 @@ func (r *Room) persist(jobs <-chan persistJob) {
 	defer close(r.persistDone)
 
 	var batch [][]byte
+	// waiters are the durable-write jobs in the current batch; each is released
+	// once the batch is on disk, whether the write succeeded or not - a caller
+	// that waited forever on a database that is down would take the document
+	// with it, and the error is already logged loudly.
+	var waiters []chan struct{}
 	flush := func() {
+		defer func() {
+			for _, done := range waiters {
+				close(done)
+			}
+			waiters = waiters[:0]
+		}()
 		if len(batch) == 0 {
 			return
 		}
@@ -153,7 +179,13 @@ func (r *Room) persist(jobs <-chan persistJob) {
 		batch = batch[:0]
 	}
 
-	ticker := time.NewTicker(r.cfg.FlushInterval)
+	// In durable-write mode every job flushes itself, so the timer only exists
+	// to keep the loop's shape; it is set long enough never to matter.
+	interval := r.cfg.FlushInterval
+	if interval < 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -171,7 +203,13 @@ func (r *Room) persist(jobs <-chan persistJob) {
 				continue
 			}
 			batch = append(batch, job.payload)
-			if len(batch) >= maxBatch {
+			if job.done != nil {
+				waiters = append(waiters, job.done)
+			}
+			// A batch is flushed when it is full, or immediately when somebody is
+			// waiting for it: durable writes are a promise about this update, not
+			// about the next one.
+			if len(batch) >= maxBatch || len(waiters) > 0 {
 				flush()
 			}
 		case <-ticker.C:

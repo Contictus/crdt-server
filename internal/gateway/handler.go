@@ -53,6 +53,14 @@ type Config struct {
 	PingInterval time.Duration
 	OutBuffer    int
 
+	// MaxConns caps how many connections this node serves at once. Zero means
+	// no cap, which is the right default for a laptop and the wrong one for
+	// anything reachable: a connection costs two goroutines, a 256-frame queue
+	// and a room, and nothing else in the server bounds how many there are.
+	// Beyond the cap the upgrade is refused with 1013, which tells a
+	// y-websocket client to come back rather than to give up.
+	MaxConns int
+
 	// Metrics is where connection counts and traffic are reported. Nil becomes
 	// a set registered nowhere, so this package never checks for one.
 	Metrics *metrics.Metrics
@@ -84,6 +92,8 @@ type Handler struct {
 	log     *slog.Logger
 	metrics *metrics.Metrics
 	nextID  atomic.Uint64
+	// open counts connections currently being served, for MaxConns.
+	open atomic.Int64
 }
 
 // New returns a handler. Rooms is required.
@@ -114,6 +124,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if name == "" || strings.Contains(name, "/") {
 		http.Error(w, "document name must be the whole path", http.StatusNotFound)
 		return
+	}
+
+	// The cap is claimed before the upgrade and released when the handler
+	// returns, so a connection that is refused never counts against it.
+	if h.cfg.MaxConns > 0 {
+		if n := h.open.Add(1); n > int64(h.cfg.MaxConns) {
+			h.open.Add(-1)
+			h.metrics.Denied.WithLabelValues("too_many_connections").Inc()
+			h.log.Warn("refusing a connection: at the limit", "limit", h.cfg.MaxConns)
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
+			return
+		}
+		defer h.open.Add(-1)
 	}
 
 	// Authorising before the upgrade means a rejected request never reaches a
