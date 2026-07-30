@@ -123,3 +123,45 @@ func TestCloseCodeLabelsAreStable(t *testing.T) {
 		t.Fatalf("code 1011 counted %v times, want 1", got)
 	}
 }
+
+// fakeStats stands in for the room manager's counters.
+type fakeStats struct{ values map[string]uint64 }
+
+func (f fakeStats) Snapshot() map[string]uint64 { return f.values }
+
+// The cluster counters are read at scrape time from the room's own atomics, so
+// /metrics and /statsz cannot drift apart. That is worth a test, because the
+// alternative - mirroring them into Prometheus counters - is the obvious
+// implementation and the one that drifts.
+func TestClusterCollectorReadsAtScrapeTime(t *testing.T) {
+	stats := fakeStats{values: map[string]uint64{
+		"published_update": 1,
+		"self_filtered":    0,
+	}}
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(metrics.NewClusterCollector(stats))
+
+	// Changing the underlying numbers must show up without re-registering.
+	stats.values["published_update"] = 7
+	stats.values["self_filtered"] = 7
+
+	const want = `
+# HELP ycollab_cluster_published_update_total Updates from local clients relayed to the other replicas.
+# TYPE ycollab_cluster_published_update_total counter
+ycollab_cluster_published_update_total 7
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "ycollab_cluster_published_update_total"); err != nil {
+		t.Error(err)
+	}
+
+	// A counter that is zero is still exported: "no envelopes were dropped" is a
+	// fact somebody wants to graph, and a missing series looks like a broken
+	// scrape.
+	families, err := reg.Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(families) != 2 {
+		t.Fatalf("gathered %d families, want 2", len(families))
+	}
+}
