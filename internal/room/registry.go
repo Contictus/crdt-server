@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sort"
 	"sync"
+
+	"github.com/mesutokul/ycollab/internal/cluster"
 )
 
 // ErrTooManyRooms means the resident-room cap is reached and every resident
@@ -40,7 +42,18 @@ type Manager struct {
 }
 
 // NewManager returns a manager whose rooms stop when ctx is cancelled.
+//
+// Every room it creates shares one Stats and one node id: both describe the
+// process, not the document. A node id per room would filter correctly but would
+// make the counters meaningless and would multiply the anti-entropy traffic by
+// the number of resident rooms.
 func NewManager(ctx context.Context, cfg ManagerConfig) *Manager {
+	if cfg.Room.Stats == nil {
+		cfg.Room.Stats = &Stats{}
+	}
+	if cfg.Room.Bus != nil && cfg.Room.NodeID == 0 {
+		cfg.Room.NodeID = cluster.NewNodeID()
+	}
 	return &Manager{
 		cfg:   cfg,
 		ctx:   ctx,
@@ -155,6 +168,12 @@ func (m *Manager) forget(name string, r *Room) {
 		delete(m.used, name)
 	}
 }
+
+// Stats returns the counters shared by every room this manager owns.
+func (m *Manager) Stats() *Stats { return m.cfg.Room.Stats }
+
+// NodeID reports the id this process publishes under.
+func (m *Manager) NodeID() uint64 { return m.cfg.Room.NodeID }
 
 // Len reports how many rooms are resident.
 func (m *Manager) Len() int {

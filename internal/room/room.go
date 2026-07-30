@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/crdt"
 	"github.com/mesutokul/ycollab/internal/protocol"
 	"github.com/mesutokul/ycollab/internal/store"
@@ -65,6 +66,18 @@ type Config struct {
 	// written.
 	FlushInterval time.Duration
 
+	// Bus relays this document's traffic to the other replicas holding it. Nil
+	// makes the room a single-node room, which is what Phase 2 and 3 were and
+	// what the room's own unit tests mostly still are.
+	Bus cluster.Bus
+	// NodeID identifies this process on the bus. Every room on a node shares it,
+	// because it is what tells our own envelopes apart from everyone else's.
+	NodeID uint64
+	// AntiEntropy is how often the room announces its state vector on the bus.
+	AntiEntropy time.Duration
+	// Stats counts cluster traffic, shared across the node's rooms.
+	Stats *Stats
+
 	Logger *slog.Logger
 
 	// Now is the clock, injectable so tests do not have to sleep.
@@ -100,6 +113,18 @@ func (c *Config) setDefaults() {
 	if c.FlushInterval <= 0 {
 		c.FlushInterval = DefaultFlushInterval
 	}
+	if c.AntiEntropy <= 0 {
+		c.AntiEntropy = DefaultAntiEntropy
+	}
+	if c.Stats == nil {
+		c.Stats = &Stats{}
+	}
+	if c.Bus != nil && c.NodeID == 0 {
+		// A node id of zero would filter nothing, and worse, would agree with
+		// every other misconfigured node. Generating one is safe: its only job is
+		// to be unique.
+		c.NodeID = cluster.NewNodeID()
+	}
 	if c.Logger == nil {
 		c.Logger = slog.New(slog.NewTextHandler(discard{}, &slog.HandlerOptions{Level: slog.LevelError}))
 	}
@@ -130,6 +155,22 @@ type Room struct {
 	// (persist goroutine).
 	sinceSnapshot int
 	folded        []int64
+
+	// stats is cfg.Stats, hoisted because every counter touch reads it.
+	stats *Stats
+
+	// remote carries envelopes from the bus into the room goroutine; pub carries
+	// ours out. Both are nil without a bus. Neither is ever blocked on: the room
+	// must not wait for the network, and the network must not wait for the room.
+	sub     cluster.Subscription
+	remote  chan cluster.Envelope
+	pub     chan pubJob
+	pubDone chan struct{}
+	// pubRunning says whether the publisher goroutine was ever started, which the
+	// shutdown needs to know before it waits for it.
+	pubRunning bool
+	// lastAnnounce is when we last published our state vector.
+	lastAnnounce time.Time
 
 	conns map[Conn]*connState
 
@@ -162,6 +203,7 @@ func New(cfg Config) *Room {
 		doc:     crdt.NewDoc(cfg.ServerClientID),
 		aw:      protocol.NewAwareness(),
 		docID:   store.DocumentID(cfg.Name),
+		stats:   cfg.Stats,
 		conns:   make(map[Conn]*connState),
 		mailbox: make(chan command, cfg.Mailbox),
 		done:    make(chan struct{}),
@@ -169,6 +211,11 @@ func New(cfg Config) *Room {
 	if cfg.Store != nil {
 		r.jobs = make(chan persistJob, persistQueue)
 		r.persistDone = make(chan struct{})
+	}
+	if cfg.Bus != nil {
+		r.remote = make(chan cluster.Envelope, remoteQueue)
+		r.pub = make(chan pubJob, publishQueue)
+		r.pubDone = make(chan struct{})
 	}
 	r.lastEmpty = cfg.Now()
 	return r
@@ -239,14 +286,25 @@ func (r *Room) send(c command) error {
 // Run is the room's goroutine. It returns when the room evicts itself or ctx is
 // cancelled.
 func (r *Room) Run(ctx context.Context) {
+	// The bus comes first, so nothing published while we are loading is lost.
+	if err := r.startFanout(ctx); err != nil {
+		// A room that cannot reach the bus would serve its clients a document
+		// that silently ignores everyone on the other replicas. Refusing is the
+		// honest answer; the client reconnects, probably to another replica.
+		r.log.Error("could not join the cluster", "err", err)
+		// The persist goroutine was never started, so there is nothing for the
+		// shutdown to wait on.
+		r.abandonPersisting()
+		r.stop(CloseInternalError, "could not join the cluster")
+		return
+	}
 	if r.cfg.Store != nil {
 		if err := r.load(ctx); err != nil {
 			// Serving an empty document under a name that has content would let
 			// clients merge their state into a blank one and write it back. A
 			// closed connection is recoverable; that is not.
 			r.log.Error("could not load document", "err", err)
-			r.jobs = nil
-			close(r.persistDone)
+			r.abandonPersisting()
 			r.stop(CloseInternalError, "could not load document")
 			return
 		}
@@ -265,6 +323,10 @@ func (r *Room) Run(ctx context.Context) {
 			if evicted := r.handle(c); evicted {
 				return
 			}
+		case env := <-r.remote:
+			// A nil channel blocks forever, so a room without a bus simply never
+			// selects this case.
+			r.remoteEnvelope(env)
 		case <-ticker.C:
 			if evicted := r.handle(tickCmd{r.cfg.Now()}); evicted {
 				return
@@ -348,6 +410,9 @@ func (r *Room) leave(conn Conn) {
 			r.log.Error("encode awareness removal", "err", err)
 		} else if payload != nil {
 			r.broadcast(protocol.WriteAwareness(payload), nil)
+			// Tell the other replicas too, so the cursor disappears there now
+			// rather than when their own awareness timeout notices.
+			r.publish(cluster.KindAwareness, payload, &r.stats.PublishedAwareness)
 		}
 	}
 }
@@ -428,6 +493,10 @@ func (r *Room) update(conn Conn, update []byte) {
 	// structs we are still missing propagate instead of being stuck behind our
 	// own integration state.
 	r.broadcast(protocol.WriteUpdate(update), conn)
+	// And to the clients on the other replicas. Only updates from a local
+	// connection are published: an update that arrived on the bus is never sent
+	// back, which is why a message cannot circulate.
+	r.publish(cluster.KindUpdate, update, &r.stats.PublishedUpdate)
 }
 
 func (r *Room) awareness(conn Conn, payload []byte) {
@@ -451,6 +520,10 @@ func (r *Room) awareness(conn Conn, payload []byte) {
 		return
 	}
 	r.broadcast(protocol.WriteAwareness(out), conn)
+	// The other replicas get the entries as we now hold them, not the client's
+	// raw payload: what we send has passed our clock rules, so a stale
+	// announcement is not forwarded to be rejected three more times.
+	r.publish(cluster.KindAwareness, out, &r.stats.PublishedAwareness)
 }
 
 // tick sweeps stale awareness states and evicts the room if it has been empty
@@ -459,8 +532,13 @@ func (r *Room) tick(now time.Time) bool {
 	if _, payload, err := r.aw.Sweep(now, r.cfg.AwarenessTTL); err != nil {
 		r.log.Error("sweep awareness", "err", err)
 	} else if payload != nil {
+		// Not published. A timeout is this replica's own conclusion from not
+		// having heard anything, and the replica the client is connected to is
+		// the one that knows whether it is still there. Publishing it would let a
+		// node with a slow bus connection delete live cursors everywhere.
 		r.broadcast(protocol.WriteAwareness(payload), nil)
 	}
+	r.announce(now)
 	if len(r.conns) > 0 || r.lastEmpty.IsZero() {
 		return false
 	}
@@ -539,6 +617,10 @@ func (r *Room) stop(code int, reason string) {
 	if r.cfg.OnExit != nil {
 		r.cfg.OnExit(r.cfg.Name)
 	}
+	// Leave the cluster before writing out: an envelope that arrives after this
+	// point has nobody to apply it, and one we still owe - the retraction from
+	// the last connection leaving - is drained here.
+	r.stopFanout()
 	// Persist before signalling that we are gone, so a caller that waits for
 	// the room knows the document is on disk.
 	r.finishPersisting()

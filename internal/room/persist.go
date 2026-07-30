@@ -196,6 +196,17 @@ func (r *Room) compact(snapshot []byte) {
 	}
 }
 
+// abandonPersisting gives up on writing anything, for the case where the room
+// fails before its writer goroutine ever started. Without it the shutdown would
+// wait for a goroutine that does not exist.
+func (r *Room) abandonPersisting() {
+	if r.jobs == nil {
+		return
+	}
+	r.jobs = nil
+	close(r.persistDone)
+}
+
 // finishPersisting flushes what is queued and waits for the writer to stop.
 // Called from the room goroutine as it shuts down, which is the persist half of
 // persist-on-evict.
