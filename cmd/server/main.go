@@ -49,12 +49,15 @@ func run() error {
 		idleTimeout  = flag.Duration("idle-timeout", room.DefaultIdleTimeout, "how long an empty room stays resident")
 		awarenessTTL = flag.Duration("awareness-ttl", 30*time.Second, "drop a client's cursor after this much silence")
 		maxRooms     = flag.Int("max-rooms", 0, "cap on resident rooms; 0 means unlimited")
+		maxConns     = flag.Int("max-conns", 0, "cap on concurrent connections to this node; 0 means unlimited")
 		shutdown     = flag.Duration("shutdown-timeout", 10*time.Second, "how long to wait for connections to drain")
 		logLevel     = flag.String("log-level", envOr("YCOLLAB_LOG_LEVEL", "info"), "debug, info, warn or error")
 
 		databaseURL   = flag.String("database-url", os.Getenv("YCOLLAB_DATABASE_URL"), "PostgreSQL connection string; empty keeps documents in memory only")
 		compactAfter  = flag.Int("compact-after", room.DefaultCompactAfter, "fold the update log into a snapshot after this many updates")
 		flushInterval = flag.Duration("flush-interval", room.DefaultFlushInterval, "how long an update may sit in memory before it is written")
+		durableWrites = flag.Bool("durable-writes", false, "write every update to the database before relaying it; removes the flush window at the cost of a round trip per update")
+		retention     = flag.Duration("retention", 0, "delete documents nothing has touched for this long; 0 keeps them forever")
 
 		redisURL    = flag.String("redis-url", os.Getenv("YCOLLAB_REDIS_URL"), "Redis connection string for cross-replica fanout; empty makes this a single node")
 		redisPrefix = flag.String("redis-prefix", envOr("YCOLLAB_REDIS_PREFIX", cluster.DefaultPrefix), "namespace for the Redis channel names")
@@ -94,6 +97,7 @@ func run() error {
 	defer stopRooms()
 
 	var persistence room.Persistence
+	var documents *store.Store
 	if *databaseURL != "" {
 		db, err := store.Open(context.Background(), *databaseURL)
 		if err != nil {
@@ -104,6 +108,7 @@ func run() error {
 			return err
 		}
 		persistence = db
+		documents = db
 		log.Info("persisting documents", "compact_after", *compactAfter)
 	} else {
 		// Worth saying out loud: without a database this process is the only
@@ -137,7 +142,7 @@ func run() error {
 			Tick:          *tick,
 			Store:         persistence,
 			CompactAfter:  *compactAfter,
-			FlushInterval: *flushInterval,
+			FlushInterval: flushSetting(*flushInterval, *durableWrites),
 			Bus:           bus,
 			AntiEntropy:   *antiEntropy,
 			Metrics:       collectors,
@@ -147,6 +152,9 @@ func run() error {
 	if bus != nil {
 		log.Info("joined the cluster", "node_id", manager.NodeID(), "anti_entropy", *antiEntropy)
 	}
+	// The cluster counters are read from the room manager at scrape time rather
+	// than mirrored into a second set, so /metrics and /statsz cannot disagree.
+	registry.MustRegister(metrics.NewClusterCollector(manager.Stats()))
 
 	authorize, err := authorizer(*jwtSecret, auth.Config{
 		Leeway:        *jwtLeeway,
@@ -165,15 +173,17 @@ func run() error {
 	mux.Handle("/", gateway.New(gateway.Config{
 		Rooms:     manager,
 		Origins:   splitList(*origins),
+		MaxConns:  *maxConns,
 		Authorize: authorize,
 		Metrics:   collectors,
 		Logger:    log,
 	}))
 
-	adminSrv, err := startAdmin(*adminAddr, *pprof, registry, manager, log)
+	adminSrv, err := startAdmin(*adminAddr, *pprof, registry, manager, documents, log)
 	if err != nil {
 		return err
 	}
+	startRetention(roomCtx, documents, *retention, log)
 	if adminSrv != nil {
 		defer func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -253,6 +263,16 @@ func authorizer(secrets string, cfg auth.Config, log *slog.Logger) (func(*http.R
 		}
 		return gateway.Grant{Subject: grant.Subject, Write: grant.Write}, nil
 	}, nil
+}
+
+// flushSetting turns the two flags into the room's one knob. A negative
+// interval is how the room is told to write through, which keeps the option out
+// of its config as a second field that could disagree with the first.
+func flushSetting(interval time.Duration, durable bool) time.Duration {
+	if durable {
+		return -1
+	}
+	return interval
 }
 
 func envOr(key, fallback string) string {

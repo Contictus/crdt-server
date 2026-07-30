@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -376,5 +377,80 @@ func TestDocumentID(t *testing.T) {
 	}
 	if _, err := store.ParseUUID("f81d4fae-7dec-11d0-a765-00a0c91e6bfZ"); !errors.Is(err, store.ErrBadUUID) {
 		t.Fatal("accepted a non-hex UUID")
+	}
+}
+
+// Deleting a document takes its log with it, through the foreign key's cascade.
+func TestDeleteRemovesTheDocumentAndItsLog(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	id := store.DocumentID(fmt.Sprintf("delete-%d", time.Now().UnixNano()))
+
+	if _, err := s.Load(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Append(ctx, id, [][]byte{{1}, {2}}); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UpdateCount(ctx, id); err != nil || n != 2 {
+		t.Fatalf("count is %d (%v), want 2", n, err)
+	}
+
+	existed, err := s.Delete(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !existed {
+		t.Fatal("Delete reported no such document")
+	}
+	if n, err := s.UpdateCount(ctx, id); err != nil || n != 0 {
+		t.Fatalf("%d log rows survived the delete (%v)", n, err)
+	}
+	// And deleting again says so rather than pretending.
+	if existed, err := s.Delete(ctx, id); err != nil || existed {
+		t.Fatalf("deleting twice reported existed=%v (%v)", existed, err)
+	}
+}
+
+// Retention deletes what nothing has touched, and only that. A document whose
+// snapshot is old but whose log has a recent row is active, which is the case
+// that makes the naive "look at updated_at alone" query wrong.
+func TestDeleteIdleSparesRecentlyWrittenDocuments(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	stale := store.DocumentID(fmt.Sprintf("stale-%d", time.Now().UnixNano()))
+	active := store.DocumentID(fmt.Sprintf("active-%d", time.Now().UnixNano()))
+
+	// Both rows are created now, and both will be older than the cutoff.
+	for _, id := range []store.UUID{stale, active} {
+		if _, err := s.Load(ctx, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Let some time pass, then write to one of them. The cutoff falls between
+	// the two moments, so the two documents differ only in whether their log has
+	// anything newer than it.
+	time.Sleep(1200 * time.Millisecond)
+	cutoff := time.Now().Add(-600 * time.Millisecond)
+	if _, err := s.Append(ctx, active, [][]byte{{1}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.DeleteIdle(ctx, cutoff); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.UpdateCount(ctx, active); err != nil || n != 1 {
+		t.Fatalf("the active document lost its log: %d rows (%v)", n, err)
+	}
+	if existed, err := s.Delete(ctx, stale); err != nil {
+		t.Fatal(err)
+	} else if existed {
+		t.Fatal("the idle document survived the retention sweep")
+	}
+
+	// And a cutoff before everything spares everything.
+	if n, err := s.DeleteIdle(ctx, time.Now().Add(-24*time.Hour)); err != nil || n != 0 {
+		t.Fatalf("a cutoff a day ago deleted %d documents (%v)", n, err)
 	}
 }

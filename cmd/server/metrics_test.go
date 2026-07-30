@@ -4,10 +4,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/mesutokul/ycollab/internal/protocol"
 )
@@ -156,5 +159,63 @@ func TestPprofCanBeDisabled(t *testing.T) {
 	defer metrics.Body.Close()
 	if metrics.StatusCode != http.StatusOK {
 		t.Fatalf("metrics answered %d", metrics.StatusCode)
+	}
+}
+
+// Deleting a document is an operator action on the admin listener, and it is
+// refused while somebody is editing rather than pulled out from under them.
+func TestDeletingADocument(t *testing.T) {
+	dbURL := os.Getenv(dbEnv)
+	if dbURL == "" {
+		t.Skipf("%s is not set; start deploy/docker-compose.yml to run this", dbEnv)
+	}
+	srv := startServer(t, buildServer(t), freePort(t), dbURL)
+	doc := fmt.Sprintf("deleteme-%d", time.Now().UnixNano())
+
+	c := dialRaw(t, srv.addr, doc)
+	c.sync()
+	c.send(protocol.WriteUpdate(readFixture(t, "text-insert-single", "update-000.bin")))
+	waitPersisted(t, dbURL, doc, 1)
+
+	// In use: refused.
+	req, err := http.NewRequest(http.MethodDelete, "http://"+srv.admin+"/documents/"+doc, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("deleting a document in use returned %d, want 409", resp.StatusCode)
+	}
+
+	// Once the editor is gone it can be deleted, and the content goes with it.
+	c.ws.Close(websocket.StatusNormalClosure, "")
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		req, err := http.NewRequest(http.MethodDelete, "http://"+srv.admin+"/documents/"+doc, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNoContent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the document was never deletable: last status %d", resp.StatusCode)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	// A client opening it now gets an empty document, not the old one.
+	fresh := dialRaw(t, srv.addr, doc)
+	if got := textOf(t, fresh.sync()); got != "" {
+		t.Fatalf("the deleted document came back as %q", got)
 	}
 }

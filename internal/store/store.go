@@ -11,6 +11,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -233,6 +234,47 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 		return fmt.Errorf("store: compact: %w", err)
 	}
 	return nil
+}
+
+// Delete removes a document and its log. It reports whether there was one.
+//
+// The log goes with it through the foreign key's ON DELETE CASCADE, so this is
+// one statement and cannot leave orphaned updates behind. Callers are expected
+// to have stopped serving the document first: nothing here prevents a resident
+// room from writing a snapshot afterwards and bringing it back.
+func (s *Store) Delete(ctx context.Context, id UUID) (bool, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM documents WHERE id = $1`, id)
+	if err != nil {
+		return false, fmt.Errorf("store: delete: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// DeleteIdle removes documents that have seen no activity since before, and
+// reports how many went.
+//
+// Activity means either the document row being touched - which compaction does -
+// or a log row written since then. Reading the log rather than maintaining a
+// last-touched column keeps the append path at one statement: appending is the
+// hot path and retention runs a few times a day.
+//
+// A document that is currently resident in some replica's memory can still be
+// caught here, and would be recreated empty by the next snapshot that replica
+// writes. That is why the server only runs this against documents nothing has
+// touched for days, and why the interval is a deployment's decision rather than
+// a default.
+func (s *Store) DeleteIdle(ctx context.Context, before time.Time) (int64, error) {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM documents d
+		  WHERE d.updated_at < $1
+		    AND NOT EXISTS (
+		          SELECT 1 FROM doc_updates u
+		           WHERE u.doc_id = d.id AND u.created_at >= $1)`,
+		before)
+	if err != nil {
+		return 0, fmt.Errorf("store: delete idle: %w", err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // UpdateCount reports how many log rows a document currently has. Used by
