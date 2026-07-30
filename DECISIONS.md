@@ -567,6 +567,77 @@ step is about half a millisecond, so a p50 below it is reported as `0s` - which
 without the resolution line reads either as a bug or as a boast, and is neither.
 Rejected: printing microseconds the clock cannot resolve.
 
+### D71. A removed awareness entry is forgotten after ten minutes
+Removing a cursor keeps its clock, so a replayed update cannot resurrect it. That
+was right and incomplete: a Yjs client picks a new random id for every `Y.Doc`,
+so every reconnect left an entry behind, and a room that stays resident for days
+grew one per reconnect. It was a slow leak in exactly the rooms that matter most,
+found by reading the code rather than by any test failing.
+
+The sweep now drops entries whose state was removed more than ten minutes ago -
+far past any in-flight duplicate, far short of a working day. The worst case if
+a genuinely ancient update arrives afterwards is one ghost cursor, which the next
+sweep removes. Rejected: keeping them forever, which is correct and unbounded;
+rejected: dropping them immediately on removal, which would let a duplicate
+removal or a slow peer resurrect a cursor.
+
+### D72. A node caps its connections
+`-max-conns` refuses connections past a limit with 503, before the upgrade. A
+connection costs two goroutines, a 256-frame queue and a room, and nothing else
+in the server bounded how many there could be: with `-jwt-secret` unset there was
+no gate at all, and with it set there was still none on how many connections one
+tokenholder could open. Default is zero, meaning no cap, which is right for a
+laptop and wrong for anything reachable - so the Kubernetes manifest sets it, as
+it sets `-max-rooms`.
+
+### D73. Durable writes are an option, not the default
+`-durable-writes` makes the room wait for an update to be on disk before it
+relays it, closing the flush window [D37] leaves open. It is off by default
+because it puts a database round trip on every keystroke, and the window it
+closes is already covered for the case that actually happens: a client that was
+editing when the server died still holds its own copy and sends it back on
+reconnect. It exists because "how much may we lose" is a question only the
+deployment can answer, and the honest answer for some of them is "nothing".
+
+### D74. Documents can be deleted, and retention is opt-in
+`DELETE /documents/{name}` on the admin listener removes a document from memory
+and from the database; the log goes with it through the foreign key's cascade. A
+document somebody is editing is refused with 409 rather than deleted out from
+under them.
+
+The admin listener is the authorisation. A token would be the wrong mechanism:
+the tokens this server understands are per-document capabilities minted for
+editors, not operator credentials, and inventing a second kind would be inventing
+an identity system.
+
+`-retention` deletes documents nothing has touched for a given period, off unless
+asked for. A collaborative document nobody has opened in months is still
+somebody's document, and deleting it by default would be the server making a
+policy call it has no standing to make. Activity is read from the log rather than
+maintained as a column, which keeps the append path at one statement: appending
+is the hot path, retention runs a few times a day.
+
+### D75. The cluster counters are collected at scrape time
+`/metrics` exposes the same numbers as `/statsz` through a collector that reads
+the room manager's atomics when Prometheus asks. Rejected: incrementing a
+Prometheus counter next to each atomic, which is the obvious implementation and
+gives two sources of truth for one fact - the kind of duplication that ends with
+a dashboard and an endpoint disagreeing during an incident.
+
+### D76. Measured before optimised
+`internal/crdt` has benchmarks for the three paths a busy server lives in. On the
+development machine: integrating an update is about 630 ns, an update that is
+already known costs 415 ns to reject, a state vector encodes in 480 ns, and a
+20 KB document produces a full diff in 23 µs. The load runs put the server at
+98,000 delivered frames a second with nothing dropped, and the server's own
+histogram puts the mean integration at about a microsecond.
+
+So no optimisation was applied: at those numbers the engine is not what limits
+this server, and a speculative change to the one part of the codebase whose
+output is verified byte for byte would be trading a real guarantee for an
+imaginary gain. The benchmarks are committed as the baseline the next person
+argues against.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

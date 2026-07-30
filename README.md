@@ -24,6 +24,8 @@ Design decisions, the wire-format derivation and the open concerns are in
   and read-write permissions, key rotation.
 - **Phase 6 — operating it.** Done: Prometheus metrics and pprof on a separate admin listener,
   and a load bot that reports propagation latency.
+- **Deployment and housekeeping.** CI, Kubernetes manifests, alert rules and a Grafana
+  dashboard, document deletion and retention, connection caps, optional durable writes.
 
 ## Run it
 
@@ -39,6 +41,13 @@ are mapped to document UUIDs by hashing, so they can be anything readable.
 Without `-database-url` the server still works, but a document lives only as long as its room
 is resident — five idle minutes by default. With it, updates are appended to a log, folded
 into a snapshot every 500 updates, and written out when a room is evicted.
+
+Writes are batched, so a crash can lose up to `-flush-interval` (200 ms by default) of edits
+that clients still hold and resend on reconnect. `-durable-writes` closes that window by
+writing each update before relaying it, at the cost of a database round trip per keystroke.
+
+`-max-conns` and `-max-rooms` bound what one node will hold. Both default to unlimited, which
+is right for a laptop and wrong for anything reachable; the Kubernetes manifests set them.
 
 ### More than one replica
 
@@ -70,6 +79,12 @@ than for clients:
 - `/statsz` — the cluster counters as JSON: how many envelopes this node published and how many
   it filtered out as its own.
 - `/debug/pprof` — the Go profiler. `-pprof=false` turns it off.
+- `DELETE /documents/{name}` — removes a document and its log. Refused with 409 while somebody
+  is editing it. The listener is the authorisation: this is an operator action, and the tokens
+  the server understands are per-document capabilities for editors, not operator credentials.
+
+Alert rules and a Grafana dashboard are in `deploy/observability/`. `-retention 720h` deletes
+documents nothing has touched for a month; it is off unless asked for.
 
 They are deliberately not on the port clients connect to. pprof dumps the heap, prints the
 command line and will block the process for a thirty-second CPU profile on request, so the
@@ -204,6 +219,17 @@ docker compose -f deploy/docker-compose.yml up -d
 YCOLLAB_TEST_REDIS_URL=redis://127.0.0.1:6380 go test ./... -race
 ```
 
+### Running it for real
+
+`deploy/k8s/ycollab.yaml` is a working deployment: three replicas, secrets for the database,
+Redis and the signing key, an ingress with the WebSocket timeouts a long-lived connection
+needs, an autoscaler on CPU and a disruption budget. The admin port is deliberately absent
+from the public Service.
+
+`.github/workflows/ci.yml` runs gofmt, vet, staticcheck, the race-detector tests against a
+real Postgres and Redis, govulncheck, the byte-for-byte wire check against real Yjs, a
+two-replica soak with real clients, and a short load run.
+
 ## Layout
 
 ```
@@ -225,5 +251,7 @@ tools/verify          Node: applies Go-produced updates in real yjs
 tools/soak            Node: drives real clients at a running server
 web                   TipTap + y-websocket demo
 deploy                docker-compose for local Postgres and Redis, plus the cluster
+deploy/k8s            Kubernetes manifests
+deploy/observability  Prometheus alert rules and a Grafana dashboard
 testdata/fixtures     committed binary fixtures
 ```
