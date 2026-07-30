@@ -17,6 +17,20 @@ const NullState = "null"
 // that vanishes is dropped on roughly the same schedule everywhere.
 const DefaultTimeout = 30 * time.Second
 
+// forgetAfter is how long a removed client's clock is remembered before its
+// entry is dropped entirely.
+//
+// The clock has to outlive the state, or a replayed update would resurrect a
+// cursor that was deliberately removed. But it cannot be kept forever: a Yjs
+// client picks a new random id for every Y.Doc, so every reconnect leaves one
+// behind, and a room that stays resident for days would accumulate an entry per
+// reconnect - a slow leak in exactly the rooms that matter most.
+//
+// Ten minutes is far past any in-flight duplicate and far short of a working
+// day. The worst case if a genuinely ancient update arrives afterwards is one
+// ghost cursor, which the sweep removes on its next pass.
+const forgetAfter = 10 * time.Minute
+
 // ErrAwarenessClockOutOfRange means a client id or clock exceeded what lib0 can
 // represent. Such a value decodes here but could never be written back out, so
 // it is refused on the way in (the reasoning behind D19).
@@ -53,6 +67,11 @@ type entry struct {
 func NewAwareness() *Awareness {
 	return &Awareness{entries: make(map[uint64]entry)}
 }
+
+// Entries reports how many clients are remembered at all, including those whose
+// state was removed but whose clock is still held. Len counts only the ones with
+// a state; the difference is what forgetAfter bounds.
+func (a *Awareness) Entries() int { return len(a.entries) }
 
 // Len reports how many clients currently have a state.
 func (a *Awareness) Len() int {
@@ -182,8 +201,17 @@ func (a *Awareness) EncodeAll() ([]byte, error) {
 func (a *Awareness) Sweep(now time.Time, ttl time.Duration) ([]uint64, []byte, error) {
 	var stale []uint64
 	for id, e := range a.entries {
-		if e.present && now.Sub(e.lastUpdated) >= ttl {
-			stale = append(stale, id)
+		if e.present {
+			if now.Sub(e.lastUpdated) >= ttl {
+				stale = append(stale, id)
+			}
+			continue
+		}
+		// Already removed, and long enough ago that nothing in flight can still
+		// refer to it. Dropping the entry is what keeps a long-lived room from
+		// growing an entry per reconnect; see forgetAfter.
+		if now.Sub(e.lastUpdated) >= forgetAfter {
+			delete(a.entries, id)
 		}
 	}
 	if len(stale) == 0 {

@@ -330,3 +330,58 @@ func FuzzApplyAwarenessNeverPanics(f *testing.F) {
 		}
 	})
 }
+
+// A removed entry keeps its clock so a replayed update cannot resurrect the
+// cursor - but not forever. A Yjs client picks a new id for every Y.Doc, so
+// every reconnect leaves one behind, and a room that stays resident for days
+// would grow an entry per reconnect.
+func TestRemovedEntriesAreEventuallyForgotten(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	a := protocol.NewAwareness()
+	if _, err := a.ApplyUpdate(singleEntry(1001, 5, `{"user":"ada"}`), now); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := a.RemoveClients([]uint64{1001}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	// While the clock is remembered, a replay at that clock is refused.
+	changed, err := a.ApplyUpdate(singleEntry(1001, 5, `{"user":"ada"}`), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(changed) != 0 {
+		t.Fatal("a replayed update resurrected a removed cursor")
+	}
+	if n := a.Entries(); n != 1 {
+		t.Fatalf("holding %d entries, want the removed one to still be remembered", n)
+	}
+
+	// A sweep well after the removal drops it.
+	if _, _, err := a.Sweep(now.Add(11*time.Minute), protocol.DefaultTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if n := a.Entries(); n != 0 {
+		t.Fatalf("holding %d entries after the grace period, want 0", n)
+	}
+}
+
+// Sweeping must not forget a client that is still there: a live cursor is
+// refreshed on every announcement, and only silence should remove it.
+func TestSweepKeepsLiveEntries(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	a := protocol.NewAwareness()
+	if _, err := a.ApplyUpdate(singleEntry(1001, 1, `{"user":"ada"}`), now); err != nil {
+		t.Fatal(err)
+	}
+	stale, _, err := a.Sweep(now.Add(time.Second), protocol.DefaultTimeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("swept %v while it was still fresh", stale)
+	}
+	if n := a.Entries(); n != 1 {
+		t.Fatalf("holding %d entries, want 1", n)
+	}
+}
