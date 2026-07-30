@@ -424,6 +424,92 @@ document, so a load balancer that pinned clients would hide the very thing the d
 exists to demonstrate. A client that reconnects lands wherever it lands and resyncs from its
 state vector, which costs one diff.
 
+### D55. A token names its document, so it is a capability rather than a login
+The `doc` claim is required and must match the document being opened. A token
+that leaks therefore opens one document until it expires, instead of being a key
+to the server. Rejected: authenticating the user and looking their permissions up
+in a table, which is what most systems do and which would put a database read on
+the connection path and a permission model in a server that has no idea what a
+user is. The application that knows who its users are mints these tokens; this
+server only checks them.
+
+### D56. HS256 with a shared secret, and the algorithm is pinned
+One symmetric key, given to the server and to whatever mints tokens. Rejected:
+RS256 or a JWKS endpoint, both of which are better when the issuer is a separate
+system that already exists, and both of which add key distribution or a network
+call to a phase whose job is to make the seam real. The parser is pinned to
+HS256 with `jwt.WithValidMethods`: without that, a token whose header says
+`"alg":"none"` is accepted, which is the oldest bug in JWT and is why the test
+suite mints one and checks that it is refused.
+
+### D57. Several secrets may be configured at once
+`-jwt-secret a,b` accepts tokens signed with either. That is the whole of key
+rotation: add the new key, wait for the tokens signed with the old one to expire,
+remove the old one. Rejected: a single key, which makes rotation an outage.
+
+### D58. Expiry is required by default, and may be capped
+A capability with no expiry is a permanent one, and the safety of putting a token
+in a URL rests entirely on it being short-lived - a URL ends up in browser
+history, in access logs and in whatever the user pastes into chat. So a token
+with no `exp` is refused unless `-jwt-require-expiry=false`, and
+`-jwt-max-lifetime` refuses tokens valid for longer than a deployment wants to
+allow. Rejected: trusting the issuer to be sensible, which is a policy the server
+can enforce for the cost of two comparisons.
+
+### D59. The token travels in the query string
+`?token=...`, which is what `y-websocket`'s `params` option writes. Rejected: an
+`Authorization` header, which a browser cannot set on a WebSocket - the API
+simply has no argument for it - so requiring one would mean writing a custom
+client and giving up the project's central promise that unmodified Yjs clients
+work. Rejected also: inventing an auth frame the client sends after connecting,
+which would be a message `y-websocket` does not send, breaking the same promise.
+A header *is* accepted as an alternative, for clients that are not browsers. The
+cost is that the token appears in URLs, which is exactly what [D58] is about.
+
+### D60. Authorisation happens before the upgrade, and the refusal is sent after it
+The check runs before `websocket.Accept`, so a request that fails never reaches
+a room and cannot even cause one to be created. The *rejection*, though, is
+written over the upgraded connection as a `y-protocols/auth` permission-denied
+message followed by a 1008 close, because that is where the reference client
+reads it (`y-websocket.js:84-92`): a client refused with an HTTP status simply
+retries forever, while one that receives this message stops. Rejected: replying
+401 before upgrading, which is more correct as HTTP and worse as behaviour.
+
+### D61. Read-only is enforced in the room, not at the edge
+The gateway decides the permission once and the room applies it, because the room
+is the thing that integrates updates - and after Phase 4 it is also the thing that
+publishes them to other replicas. Enforcing it there means a refused update is
+never applied, never persisted, never relayed to a local peer and never put on
+the bus, all from one check.
+
+An empty update is exempt. A well-behaved read-only client answers our SyncStep1
+with a diff, and once it has the document that diff carries nothing; treating it
+as an attempt to write would disconnect every read-only client on its second
+message.
+
+### D62. A read-only client that writes is told, and disconnected
+It gets a permission-denied message and a 1008 close. Rejected: silently
+discarding the update, which is tempting because it keeps the connection alive -
+and which shows the user a document that looks edited, will not survive a reload,
+and diverges from what everyone else sees. A visible failure is kinder than a
+document that lies. This is the same policy as backpressure ([D29]): say why,
+then close.
+
+### D63. The write pump flushes its queue before the close frame
+Refusing an update means queueing an explanation and then closing the connection,
+and the write pump selected between "a frame is waiting" and "we are closing"
+with no order between them - so the explanation was lost about half the time.
+The pump now drains whatever is queued, then writes the close frame, then
+unblocks the reader ([D33]). The queue is bounded at 256 and every write has its
+own deadline, so a hostile peer cannot hold the shutdown open.
+
+### D64. Without a secret, the server is open, and says so
+No `-jwt-secret` means every connection may read and write, and the server logs a
+warning at startup, alongside the ones for no database and no Redis. Rejected:
+refusing to start without one, which would make the demo a configuration exercise
+and push people towards checking in a secret. Rejected also: staying quiet, which
+is how an open server reaches production.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

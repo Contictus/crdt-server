@@ -20,7 +20,9 @@ Design decisions, the wire-format derivation and the open concerns are in
   500 updates, persist-on-evict, LRU cap on resident rooms.
 - **Phase 4 — horizontal scale.** Done: Redis Pub/Sub fanout with origin filtering, periodic
   anti-entropy, and a three-replica deployment behind Caddy.
-- Phases 5-6 (auth, load testing) are not started.
+- **Phase 5 — authorisation.** Done: HS256 tokens that name the document they open, read-only
+  and read-write permissions, key rotation.
+- Phase 6 (metrics and load testing) is not started.
 
 ## Run it
 
@@ -59,15 +61,52 @@ its state vector.
 `GET /statsz` returns the node id and its cluster counters, including how many envelopes it
 published and how many it filtered out as its own.
 
+### Tokens
+
+`-jwt-secret` makes the server require a signed token. Without it every client may read and
+write every document, which is fine for the demo and nothing else — the server warns about it
+at startup.
+
+A token is a JWT signed with HS256 that names the document it opens and the permission it
+grants:
+
+```json
+{ "doc": "notes", "perm": "write", "sub": "ada", "exp": 1785400000 }
+```
+
+Naming the document is what makes it a capability rather than a login: a token that leaks opens
+one document until it expires. `perm` is `read` or `write`; a read-only connection receives the
+document and publishes its cursor, and is refused with a permission-denied message and a 1008
+close if it tries to edit. An absent `perm` means `read`.
+
+The token travels as `?token=...`, which is what `y-websocket`'s `params` option writes and the
+only place a browser can put one — the WebSocket API cannot set a header. An `Authorization:
+Bearer` header is accepted too, for clients that are not browsers. Because the token ends up in
+URLs, expiry is required by default (`-jwt-require-expiry`) and can be capped
+(`-jwt-max-lifetime`).
+
+In a real deployment the application that knows who its users are mints these. For local use:
+
+```sh
+export YCOLLAB_JWT_SECRET=$(go run ./cmd/ycollab-token -gen-secret)
+go run ./cmd/ycollab-token -doc demo -perm write -ttl 1h
+go run ./cmd/ycollab-token -doc demo -perm read -url ws://127.0.0.1:8080   # a full URL
+```
+
+`-jwt-secret a,b` accepts both keys at once, which is how a key is rotated without an outage.
+
 ### The demo
 
 ```sh
 cd web && npm install && npm run dev
 ```
 
-Then open <http://localhost:5173/#demo> in two tabs and type in both. The header shows the
-connection state, the peer count and the document's state vector, so the two tabs can be
-compared at a glance.
+Then open <http://localhost:5173/#demo> in two tabs and type in both. If the server requires
+tokens, open <http://localhost:5173/?token=...#demo> instead — the page passes the token
+through to the provider.
+
+The header shows the connection state, the peer count and the document's state vector, so the
+two tabs can be compared at a glance.
 
 ### Tests
 
@@ -117,6 +156,7 @@ YCOLLAB_TEST_REDIS_URL=redis://127.0.0.1:6380 go test ./... -race
 ```
 cmd/server            the server binary
 cmd/ycollab-dump      re-encodes fixtures with the Go engine, for tools/verify
+cmd/ycollab-token     mints tokens for local use
 internal/crdt         the CRDT engine; standard library only
 internal/crdt/lib0    varUint, varInt, varString, varUint8Array and the any codec
 internal/protocol     sync and awareness framing; pure bytes, no I/O
@@ -124,6 +164,7 @@ internal/room         one actor goroutine per document
 internal/gateway      WebSocket lifecycle, pumps, backpressure
 internal/store        PostgreSQL: snapshots and the append-only update log
 internal/cluster      Redis Pub/Sub fanout between replicas
+internal/auth         token verification: who may open which document, and how
 tools/fixturegen      Node: generates the binary fixtures from real yjs
 tools/verify          Node: applies Go-produced updates in real yjs
 tools/soak            Node: drives real clients at a running server
