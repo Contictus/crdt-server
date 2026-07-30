@@ -31,6 +31,9 @@ func readFixture(t *testing.T, parts ...string) []byte {
 // connection while its goroutine is writing to it.
 type fakeConn struct {
 	id uint64
+	// readOnly makes CanWrite report false. The zero value is a normal
+	// read-write connection, which is what almost every test wants.
+	readOnly bool
 
 	mu     sync.Mutex
 	sent   [][]byte
@@ -41,6 +44,8 @@ type fakeConn struct {
 }
 
 func (c *fakeConn) ID() uint64 { return c.id }
+
+func (c *fakeConn) CanWrite() bool { return !c.readOnly }
 
 func (c *fakeConn) Send(frame []byte) bool {
 	c.mu.Lock()

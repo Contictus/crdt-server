@@ -482,6 +482,22 @@ func (r *Room) sendAll(conn Conn) {
 }
 
 func (r *Room) update(conn Conn, update []byte) {
+	if !conn.CanWrite() {
+		// A read-only client still answers our SyncStep1, and once it has the
+		// document that answer is an update carrying nothing. Treating an empty
+		// update as an attempt to write would disconnect every well-behaved
+		// read-only client on the second message.
+		if isEmptyUpdate(update) {
+			return
+		}
+		// Anything else is a real edit. It is refused out loud rather than
+		// dropped: a client whose edits vanish silently shows its user a document
+		// that will not survive a reload, which is worse than being told.
+		r.log.Warn("update from a read-only connection", "conn", conn.ID())
+		conn.Send(protocol.WritePermissionDenied("read-only: this token does not grant write access"))
+		r.drop(conn, ClosePolicyViolation, "read-only")
+		return
+	}
 	if err := r.doc.ApplyUpdate(update); err != nil {
 		r.log.Warn("bad update", "conn", conn.ID(), "err", err)
 		r.drop(conn, CloseProtocolError, "bad update")

@@ -28,6 +28,11 @@ const (
 type Conn interface {
 	// ID identifies the connection for logging.
 	ID() uint64
+	// CanWrite reports whether this connection may send document updates. It is
+	// decided once, when the connection is authorised, and never changes: a
+	// token's permission cannot be revoked mid-connection, and pretending
+	// otherwise would be a promise this server cannot keep.
+	CanWrite() bool
 	// Send queues one frame, reporting false if the outbound buffer is full.
 	// It must not block.
 	Send(frame []byte) bool

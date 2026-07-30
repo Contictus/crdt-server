@@ -54,11 +54,22 @@ type Config struct {
 
 	Logger *slog.Logger
 
-	// Authorize runs before the upgrade. A non-nil error rejects the
-	// connection with a y-protocols/auth permission-denied message and a 1008
-	// close, which is the shape Phase 5's JWT check will fill in. The error's
+	// Authorize decides whether this request may open this document, and with
+	// what permission. A non-nil error rejects the connection with a
+	// y-protocols/auth permission-denied message and a 1008 close. The error's
 	// text is sent to the client, so it must not leak anything.
-	Authorize func(r *http.Request) error
+	//
+	// Nil means every connection is allowed to read and write, which is what a
+	// server started without a signing secret does.
+	Authorize func(r *http.Request, doc string) (Grant, error)
+}
+
+// A Grant is what Authorize decided.
+type Grant struct {
+	// Subject identifies the client for logging. It may be empty.
+	Subject string
+	// Write says whether the connection may send document updates.
+	Write bool
 }
 
 // Handler serves the WebSocket endpoint. The URL path is the document name,
@@ -96,9 +107,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Authorising before the upgrade means a rejected request never reaches a
+	// room, so a bad token cannot even create one.
+	grant := Grant{Write: true}
 	var authErr error
 	if h.cfg.Authorize != nil {
-		authErr = h.cfg.Authorize(r)
+		grant, authErr = h.cfg.Authorize(r, name)
 	}
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -120,7 +134,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	c := newConn(h.nextID.Add(1), ws, h.cfg.OutBuffer, cancel)
+	c := newConn(h.nextID.Add(1), ws, h.cfg.OutBuffer, grant.Write, cancel)
 	rm, err := h.cfg.Rooms.Join(name, c)
 	if err != nil {
 		h.log.Warn("join failed", "room", name, "err", err)
@@ -128,7 +142,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log := h.log.With("room", name, "conn", c.id)
+	log := h.log.With("room", name, "conn", c.id, "sub", grant.Subject, "write", grant.Write)
 	go h.writePump(c, log)
 	h.readPump(ctx, c, rm, log)
 
@@ -189,7 +203,14 @@ func (h *Handler) readPump(ctx context.Context, c *conn, rm *room.Room, log *slo
 func (h *Handler) writePump(c *conn, log *slog.Logger) {
 	defer close(c.finished)
 	defer func() {
-		// The close frame goes out first; only then is the reader unblocked.
+		// Whatever is already queued goes out before the close frame. The room
+		// closes a connection by queueing an explanation and then closing it -
+		// a permission-denied for a read-only client that tried to write, for
+		// instance - and without this drain the select below would race, and the
+		// client would be disconnected without being told why. The queue is
+		// bounded and each write has its own deadline, so this cannot hang.
+		h.drain(c, log)
+		// The close frame goes out next; only then is the reader unblocked.
 		// The other order loses the close code: cancelling a read context makes
 		// coder/websocket drop the connection there and then.
 		code, reason := c.closeStatus()
@@ -221,6 +242,24 @@ func (h *Handler) writePump(c *conn, log *slog.Logger) {
 				c.Close(int(websocket.StatusGoingAway), "ping timeout")
 				return
 			}
+		}
+	}
+}
+
+// drain writes whatever is still queued, giving up at the first failure: if the
+// socket is gone, the frames after it are not going to make it either.
+func (h *Handler) drain(c *conn, log *slog.Logger) {
+	for {
+		select {
+		case frame := <-c.out:
+			if err := h.write(context.Background(), c, frame); err != nil {
+				if !isExpectedClose(err) {
+					log.Debug("could not flush a queued frame", "err", err)
+				}
+				return
+			}
+		default:
+			return
 		}
 	}
 }

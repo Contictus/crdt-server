@@ -23,6 +23,9 @@ type conn struct {
 	id  uint64
 	ws  *websocket.Conn
 	out chan []byte
+	// write is the permission the token granted, fixed for the connection's
+	// lifetime.
+	write bool
 
 	closeOnce sync.Once
 	done      chan struct{}
@@ -39,7 +42,7 @@ type conn struct {
 	reason string
 }
 
-func newConn(id uint64, ws *websocket.Conn, buffer int, cancel context.CancelFunc) *conn {
+func newConn(id uint64, ws *websocket.Conn, buffer int, write bool, cancel context.CancelFunc) *conn {
 	if buffer <= 0 {
 		buffer = DefaultOutBuffer
 	}
@@ -47,6 +50,7 @@ func newConn(id uint64, ws *websocket.Conn, buffer int, cancel context.CancelFun
 		id:       id,
 		ws:       ws,
 		out:      make(chan []byte, buffer),
+		write:    write,
 		done:     make(chan struct{}),
 		finished: make(chan struct{}),
 		cancel:   cancel,
@@ -55,6 +59,8 @@ func newConn(id uint64, ws *websocket.Conn, buffer int, cancel context.CancelFun
 }
 
 func (c *conn) ID() uint64 { return c.id }
+
+func (c *conn) CanWrite() bool { return c.write }
 
 // Send queues a frame, reporting false when the outbound buffer is full.
 func (c *conn) Send(frame []byte) bool {
