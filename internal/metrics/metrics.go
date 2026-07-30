@@ -33,6 +33,13 @@ type Metrics struct {
 	BytesReceived    prometheus.Counter
 	BytesSent        prometheus.Counter
 
+	// Throttled counts frames that had to wait for their connection's rate
+	// limit, and ThrottledSeconds the time spent waiting. Both being zero is the
+	// normal state; either one growing means somebody is sending faster than the
+	// server is willing to read.
+	Throttled        prometheus.Counter
+	ThrottledSeconds prometheus.Counter
+
 	ApplyDuration prometheus.Histogram
 	ApplyFailed   prometheus.Counter
 	UpdateBytes   prometheus.Histogram
@@ -91,6 +98,15 @@ func New(reg prometheus.Registerer) *Metrics {
 		BytesSent: factory.counter(prometheus.CounterOpts{
 			Name: "ycollab_bytes_sent_total",
 			Help: "Bytes written to clients.",
+		}),
+
+		Throttled: factory.counter(prometheus.CounterOpts{
+			Name: "ycollab_throttled_total",
+			Help: "Frames that had to wait for their connection's rate limit.",
+		}),
+		ThrottledSeconds: factory.counter(prometheus.CounterOpts{
+			Name: "ycollab_throttled_seconds_total",
+			Help: "Time spent waiting on rate limits, summed across connections.",
 		}),
 
 		ApplyDuration: factory.histogram(prometheus.HistogramOpts{

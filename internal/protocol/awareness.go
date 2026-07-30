@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"time"
 
@@ -36,6 +37,57 @@ const forgetAfter = 10 * time.Minute
 // it is refused on the way in (the reasoning behind D19).
 var ErrAwarenessClockOutOfRange = errors.New("protocol: awareness value out of range")
 
+var (
+	// ErrStateTooLarge means a client published a state larger than the room
+	// allows. An awareness state is a cursor: a name, a colour and a couple of
+	// offsets. Anything much bigger is either a client with a bug or a client
+	// using the awareness channel as free broadcast storage - and either way it
+	// is held in memory here and relayed to every peer and every replica, which
+	// makes it the cheapest amplification this server offers.
+	ErrStateTooLarge = errors.New("protocol: awareness state is too large")
+	// ErrTooManyClients means the room already tracks as many clients as it is
+	// willing to. Client ids are chosen by the client, so one connection can
+	// invent as many as it likes, and each one costs an entry that is broadcast
+	// to everybody.
+	ErrTooManyClients = errors.New("protocol: too many awareness clients")
+)
+
+// Limits bound what an Awareness will hold.
+type Limits struct {
+	// MaxState is the largest state a client may publish, in bytes. Zero means
+	// DefaultMaxState; negative means no limit.
+	MaxState int
+	// MaxClients is how many clients one room will track. Zero means
+	// DefaultMaxClients; negative means no limit.
+	MaxClients int
+}
+
+const (
+	// DefaultMaxState is generous next to what a cursor actually costs: a
+	// y-prosemirror selection with a user name and colour is a few hundred
+	// bytes, so this is twenty times the real thing and still small enough that
+	// a full room cannot exhaust memory with it.
+	DefaultMaxState = 4 << 10
+	// DefaultMaxClients bounds the entries one document can accumulate. Together
+	// with DefaultMaxState it caps a room's awareness at a few megabytes, which
+	// is what makes the cap a memory bound rather than a gesture.
+	DefaultMaxClients = 1024
+)
+
+func (l Limits) maxState() int {
+	if l.MaxState == 0 {
+		return DefaultMaxState
+	}
+	return l.MaxState
+}
+
+func (l Limits) maxClients() int {
+	if l.MaxClients == 0 {
+		return DefaultMaxClients
+	}
+	return l.MaxClients
+}
+
 // Awareness tracks the last state every client published.
 //
 // It is the server's copy of the shared map described in awareness.js. Two
@@ -54,6 +106,12 @@ var ErrAwarenessClockOutOfRange = errors.New("protocol: awareness value out of r
 // Awareness is not safe for concurrent use; the room goroutine owns it.
 type Awareness struct {
 	entries map[uint64]entry
+	limits  Limits
+	// present counts the entries that currently hold a state. The cap is on
+	// these rather than on the map: an entry whose state was removed is a
+	// remembered clock, not a cursor, and holding a slot for it would mean a
+	// full room refusing newcomers for the ten minutes after somebody left.
+	present int
 }
 
 type entry struct {
@@ -63,9 +121,12 @@ type entry struct {
 	lastUpdated time.Time
 }
 
-// NewAwareness returns an empty tracker.
-func NewAwareness() *Awareness {
-	return &Awareness{entries: make(map[uint64]entry)}
+// NewAwareness returns an empty tracker with the default limits.
+func NewAwareness() *Awareness { return NewAwarenessWithLimits(Limits{}) }
+
+// NewAwarenessWithLimits returns an empty tracker bounded by limits.
+func NewAwarenessWithLimits(limits Limits) *Awareness {
+	return &Awareness{entries: make(map[uint64]entry), limits: limits}
 }
 
 // Entries reports how many clients are remembered at all, including those whose
@@ -141,13 +202,41 @@ func (a *Awareness) ApplyUpdate(payload []byte, now time.Time) ([]uint64, error)
 		if client > lib0.MaxSafeInteger || clock > lib0.MaxSafeInteger {
 			return changed, ErrAwarenessClockOutOfRange
 		}
-		e := a.entries[client]
+		e, known := a.entries[client]
 		isNull := state == NullState
+
+		// A removal is always allowed through, whatever the limits say: refusing
+		// one would leave a cursor on screen that its owner has retracted.
+		if !isNull {
+			if max := a.limits.maxState(); max > 0 && len(state) > max {
+				return changed, fmt.Errorf("%w: %d bytes, limit %d", ErrStateTooLarge, len(state), max)
+			}
+			// The cap is on *new* clients only. A full room must keep working for
+			// the people already in it, and client ids are chosen by the client,
+			// so this is the only place the count can be held down.
+			if max := a.limits.maxClients(); max > 0 && (!known || !e.present) && a.present >= max {
+				return changed, fmt.Errorf("%w: %d", ErrTooManyClients, a.present)
+			}
+		}
 		if !(e.clock < clock || (e.clock == clock && isNull && e.present)) {
 			continue
 		}
+		if !known && a.limits.maxClients() > 0 {
+			// Remembered clocks are bounded too, or a client cycling through ids -
+			// announce, retract, announce another - would grow the map for the
+			// whole forgetAfter window. The oldest one goes; it is the one least
+			// likely to still have a duplicate in flight.
+			a.forgetOldest(2 * a.limits.maxClients())
+		}
 		e.clock = clock
 		e.lastUpdated = now
+		if e.present != !isNull {
+			if isNull {
+				a.present--
+			} else {
+				a.present++
+			}
+		}
 		e.present = !isNull
 		if isNull {
 			e.state = ""
@@ -248,9 +337,33 @@ func (a *Awareness) RemoveClients(clients []uint64, now time.Time) ([]uint64, []
 // minute of being a ghost. y-protocols does the same thing for the same reason:
 // removeAwarenessStates only bumps the clock of the *local* client
 // (awareness.js:175-181), never of the peers it is dropping.
+// forgetOldest drops removed entries until the map is under limit.
+func (a *Awareness) forgetOldest(limit int) {
+	for len(a.entries) >= limit {
+		var oldest uint64
+		var at time.Time
+		found := false
+		for id, e := range a.entries {
+			if e.present {
+				continue
+			}
+			if !found || e.lastUpdated.Before(at) {
+				oldest, at, found = id, e.lastUpdated, true
+			}
+		}
+		if !found {
+			return
+		}
+		delete(a.entries, oldest)
+	}
+}
+
 func (a *Awareness) remove(clients []uint64, now time.Time) ([]uint64, []byte, error) {
 	for _, id := range clients {
 		e := a.entries[id]
+		if e.present {
+			a.present--
+		}
 		e.present = false
 		e.state = ""
 		e.lastUpdated = now

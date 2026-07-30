@@ -55,6 +55,9 @@ type Config struct {
 	Tick         time.Duration
 	IdleTimeout  time.Duration
 	AwarenessTTL time.Duration
+	// AwarenessLimits bound how much cursor state a room will hold. The zero
+	// value applies the defaults.
+	AwarenessLimits protocol.Limits
 
 	// Store persists the document. Nil keeps everything in memory, which is
 	// what the room's own unit tests want and what the server does when it is
@@ -212,7 +215,7 @@ func New(cfg Config) *Room {
 		cfg:     cfg,
 		log:     cfg.Logger.With("room", cfg.Name),
 		doc:     crdt.NewDoc(cfg.ServerClientID),
-		aw:      protocol.NewAwareness(),
+		aw:      protocol.NewAwarenessWithLimits(cfg.AwarenessLimits),
 		docID:   store.DocumentID(cfg.Name),
 		stats:   cfg.Stats,
 		metrics: cfg.Metrics,
@@ -541,6 +544,17 @@ func (r *Room) update(conn Conn, update []byte) {
 func (r *Room) awareness(conn Conn, payload []byte) {
 	changed, err := r.aw.ApplyUpdate(payload, r.cfg.Now())
 	if err != nil {
+		// A state that is too large, or a connection inventing client ids, is a
+		// policy violation rather than a malformed message: it is refused with
+		// the same code backpressure and read-only writes use, and the client is
+		// told which rule it broke rather than being dropped in silence.
+		if errors.Is(err, protocol.ErrStateTooLarge) || errors.Is(err, protocol.ErrTooManyClients) {
+			r.metrics.Denied.WithLabelValues("awareness_limit").Inc()
+			r.log.Warn("awareness update refused", "conn", conn.ID(), "err", err)
+			conn.Send(protocol.WritePermissionDenied(err.Error()))
+			r.drop(conn, ClosePolicyViolation, "awareness limit")
+			return
+		}
 		r.log.Warn("bad awareness update", "conn", conn.ID(), "err", err)
 		r.drop(conn, CloseProtocolError, "bad awareness update")
 		return

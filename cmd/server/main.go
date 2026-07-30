@@ -31,6 +31,7 @@ import (
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/gateway"
 	"github.com/mesutokul/ycollab/internal/metrics"
+	"github.com/mesutokul/ycollab/internal/protocol"
 	"github.com/mesutokul/ycollab/internal/room"
 	"github.com/mesutokul/ycollab/internal/store"
 )
@@ -68,6 +69,14 @@ func run() error {
 		jwtLeeway        = flag.Duration("jwt-leeway", auth.DefaultLeeway, "clock skew allowed between whatever mints tokens and this server")
 		jwtMaxLifetime   = flag.Duration("jwt-max-lifetime", 0, "reject tokens valid for longer than this; 0 accepts any expiry")
 		jwtRequireExpiry = flag.Bool("jwt-require-expiry", true, "reject tokens that never expire")
+
+		awarenessMaxState   = flag.Int("awareness-max-state", protocol.DefaultMaxState, "largest cursor state a client may publish, in bytes; negative means no limit")
+		awarenessMaxClients = flag.Int("awareness-max-clients", protocol.DefaultMaxClients, "how many clients one document will track cursors for; negative means no limit")
+
+		rateMessages     = flag.Float64("rate-messages", gateway.DefaultRateMessages, "messages per second one connection may send; negative means no limit")
+		rateMessageBurst = flag.Int("rate-message-burst", gateway.DefaultRateMessageBurst, "how many messages may arrive at once")
+		rateBytes        = flag.Float64("rate-bytes", gateway.DefaultRateBytes, "bytes per second one connection may send; negative means no limit")
+		rateByteBurst    = flag.Int("rate-byte-burst", gateway.DefaultRateByteBurst, "how many bytes may arrive at once")
 
 		adminAddr = flag.String("admin-addr", envOr("YCOLLAB_ADMIN_ADDR", "127.0.0.1:6060"), "address for /metrics, /statsz and /debug/pprof; empty disables them")
 		pprof     = flag.Bool("pprof", true, "serve /debug/pprof on the admin address")
@@ -137,8 +146,12 @@ func run() error {
 	manager := room.NewManager(roomCtx, room.ManagerConfig{
 		MaxRooms: *maxRooms,
 		Room: room.Config{
-			IdleTimeout:   *idleTimeout,
-			AwarenessTTL:  *awarenessTTL,
+			IdleTimeout:  *idleTimeout,
+			AwarenessTTL: *awarenessTTL,
+			AwarenessLimits: protocol.Limits{
+				MaxState:   *awarenessMaxState,
+				MaxClients: *awarenessMaxClients,
+			},
 			Tick:          *tick,
 			Store:         persistence,
 			CompactAfter:  *compactAfter,
@@ -171,9 +184,15 @@ func run() error {
 		fmt.Fprintln(w, "ok")
 	})
 	mux.Handle("/", gateway.New(gateway.Config{
-		Rooms:     manager,
-		Origins:   splitList(*origins),
-		MaxConns:  *maxConns,
+		Rooms:    manager,
+		Origins:  splitList(*origins),
+		MaxConns: *maxConns,
+		Rate: gateway.Rate{
+			Messages:     *rateMessages,
+			MessageBurst: *rateMessageBurst,
+			Bytes:        *rateBytes,
+			ByteBurst:    *rateByteBurst,
+		},
 		Authorize: authorize,
 		Metrics:   collectors,
 		Logger:    log,

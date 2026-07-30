@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -383,5 +384,99 @@ func TestSweepKeepsLiveEntries(t *testing.T) {
 	}
 	if n := a.Entries(); n != 1 {
 		t.Fatalf("holding %d entries, want 1", n)
+	}
+}
+
+// An awareness state is a cursor: a name, a colour and a couple of offsets.
+// Anything much larger is held in memory here and relayed to every peer and
+// every replica, which makes it the cheapest amplification this server offers.
+func TestAnOversizedStateIsRefused(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	a := protocol.NewAwarenessWithLimits(protocol.Limits{MaxState: 64})
+
+	big := `{"user":"` + strings.Repeat("x", 200) + `"}`
+	_, err := a.ApplyUpdate(singleEntry(1001, 1, big), now)
+	if !errors.Is(err, protocol.ErrStateTooLarge) {
+		t.Fatalf("got %v, want ErrStateTooLarge", err)
+	}
+	if a.Entries() != 0 {
+		t.Fatal("the oversized state was stored anyway")
+	}
+
+	// A state inside the limit still works, so the check is a limit and not a
+	// wall.
+	if _, err := a.ApplyUpdate(singleEntry(1001, 1, `{"user":"ada"}`), now); err != nil {
+		t.Fatalf("a small state was refused: %v", err)
+	}
+}
+
+// Client ids are chosen by the client, so one connection can invent as many as
+// it likes and each one costs an entry that is broadcast to everybody.
+func TestTheClientCountIsCapped(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	a := protocol.NewAwarenessWithLimits(protocol.Limits{MaxClients: 3})
+
+	for i := range uint64(3) {
+		if _, err := a.ApplyUpdate(singleEntry(1000+i, 1, `{"user":"ada"}`), now); err != nil {
+			t.Fatalf("client %d was refused below the cap: %v", i, err)
+		}
+	}
+	if _, err := a.ApplyUpdate(singleEntry(2000, 1, `{"user":"grace"}`), now); !errors.Is(err, protocol.ErrTooManyClients) {
+		t.Fatalf("got %v, want ErrTooManyClients", err)
+	}
+
+	// The people already in the room must keep working: a full room that stops
+	// updating cursors is worse than one that stops adding them.
+	if _, err := a.ApplyUpdate(singleEntry(1000, 2, `{"user":"ada","cursor":1}`), now); err != nil {
+		t.Fatalf("an existing client was refused at the cap: %v", err)
+	}
+	// And a removal is always allowed through, or a cursor its owner retracted
+	// would stay on screen.
+	if _, err := a.ApplyUpdate(singleEntry(1001, 3, protocol.NullState), now); err != nil {
+		t.Fatalf("a removal was refused at the cap: %v", err)
+	}
+	// And that frees a slot straight away: the cap is on cursors, not on
+	// remembered clocks. Holding a slot for somebody who left would mean a full
+	// room refusing newcomers for ten minutes after every departure.
+	if _, err := a.ApplyUpdate(singleEntry(2000, 1, `{"user":"grace"}`), now); err != nil {
+		t.Fatalf("the slot was not freed by a removal: %v", err)
+	}
+	if got := a.Len(); got != 3 {
+		t.Fatalf("%d cursors at a cap of 3", got)
+	}
+}
+
+// Negative means no limit, for a deployment that has its own idea of what a
+// cursor may carry.
+func TestLimitsCanBeSwitchedOff(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	a := protocol.NewAwarenessWithLimits(protocol.Limits{MaxState: -1, MaxClients: -1})
+	big := `{"user":"` + strings.Repeat("x", 100000) + `"}`
+	if _, err := a.ApplyUpdate(singleEntry(1001, 1, big), now); err != nil {
+		t.Fatalf("a large state was refused with the limit off: %v", err)
+	}
+}
+
+// A client cycling through ids - announce, retract, announce another - would
+// otherwise grow the map for the whole forgetAfter window, since every retracted
+// id leaves a remembered clock behind.
+func TestRememberedClocksAreBounded(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	const cap = 4
+	a := protocol.NewAwarenessWithLimits(protocol.Limits{MaxClients: cap})
+
+	for i := range uint64(200) {
+		if _, err := a.ApplyUpdate(singleEntry(1000+i, 1, `{"user":"ada"}`), now); err != nil {
+			t.Fatalf("announce %d: %v", i, err)
+		}
+		if _, err := a.ApplyUpdate(singleEntry(1000+i, 2, protocol.NullState), now); err != nil {
+			t.Fatalf("retract %d: %v", i, err)
+		}
+	}
+	if got := a.Entries(); got > 2*cap {
+		t.Fatalf("holding %d entries after 200 cycles, want at most %d", got, 2*cap)
+	}
+	if got := a.Len(); got != 0 {
+		t.Fatalf("%d cursors left after every one was retracted", got)
 	}
 }

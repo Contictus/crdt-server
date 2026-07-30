@@ -53,6 +53,10 @@ type Config struct {
 	PingInterval time.Duration
 	OutBuffer    int
 
+	// Rate bounds how fast one connection may send. The zero value applies the
+	// defaults, which are generous; a negative rate switches a dimension off.
+	Rate Rate
+
 	// MaxConns caps how many connections this node serves at once. Zero means
 	// no cap, which is the right default for a laptop and the wrong one for
 	// anything reachable: a connection costs two goroutines, a 256-frame queue
@@ -184,7 +188,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	log := h.log.With("room", name, "conn", c.id, "sub", grant.Subject, "write", grant.Write)
 	go h.writePump(c, log)
-	h.readPump(ctx, c, rm, log)
+	h.readPump(ctx, c, rm, newLimiter(h.cfg.Rate, nil), log)
 
 	// One Leave per connection, whatever ended it.
 	_ = rm.Leave(c)
@@ -206,7 +210,7 @@ func (h *Handler) reject(ctx context.Context, ws *websocket.Conn, cause error) {
 
 // readPump owns reading. It returns when the peer goes away, the room closes
 // the connection, or the server shuts down.
-func (h *Handler) readPump(ctx context.Context, c *conn, rm *room.Room, log *slog.Logger) {
+func (h *Handler) readPump(ctx context.Context, c *conn, rm *room.Room, limit *limiter, log *slog.Logger) {
 	for {
 		typ, data, err := c.ws.Read(ctx)
 		if err != nil {
@@ -224,6 +228,19 @@ func (h *Handler) readPump(ctx context.Context, c *conn, rm *room.Room, log *slo
 			return
 		}
 		h.metrics.BytesReceived.Add(float64(len(data)))
+
+		// Over the limit this waits rather than closing, which stops us reading
+		// and lets TCP slow the sender down. Only this connection is affected:
+		// the room is never blocked on it.
+		if waited, err := limit.wait(ctx, len(data)); err != nil {
+			log.Debug("throttling ended with the connection", "err", err)
+			return
+		} else if waited > 0 {
+			h.metrics.Throttled.Inc()
+			h.metrics.ThrottledSeconds.Add(waited.Seconds())
+			log.Debug("throttled", "waited", waited)
+		}
+
 		// data is freshly allocated per read, so the room may keep slices of it
 		// and broadcast them without a copy.
 		if err := rm.Deliver(c, data); err != nil {
@@ -269,10 +286,16 @@ func (h *Handler) writePump(c *conn, log *slog.Logger) {
 			return
 		case frame := <-c.out:
 			if err := h.write(ctx, c, frame); err != nil {
-				if !isExpectedClose(err) {
-					log.Debug("write failed", "err", err)
-				}
-				c.Close(int(websocket.StatusInternalError), "write failed")
+				// A failed write is the transport breaking, not this server
+				// failing to serve the document, and the close code never
+				// reaches the peer anyway - the socket is already gone. What it
+				// does reach is the metric, so recording 1011 here put "internal
+				// errors" on the dashboard every time somebody closed a tab.
+				// 1011 is kept for the case it describes: a document we could not
+				// serve. Found by watching the close-code metric during a load
+				// run, not by a test.
+				log.Debug("write failed", "err", err)
+				c.Close(int(websocket.StatusGoingAway), "write failed")
 				return
 			}
 		case <-ticker.C:
