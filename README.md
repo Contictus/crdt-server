@@ -22,7 +22,8 @@ Design decisions, the wire-format derivation and the open concerns are in
   anti-entropy, and a three-replica deployment behind Caddy.
 - **Phase 5 — authorisation.** Done: HS256 tokens that name the document they open, read-only
   and read-write permissions, key rotation.
-- Phase 6 (metrics and load testing) is not started.
+- **Phase 6 — operating it.** Done: Prometheus metrics and pprof on a separate admin listener,
+  and a load bot that reports propagation latency.
 
 ## Run it
 
@@ -54,12 +55,26 @@ docker compose -f deploy/docker-compose.cluster.yml up -d --build
 ```
 
 Caddy is on <http://127.0.0.1:8080> and each replica is also published on 8081, 8082 and 8083,
-which is what lets a test put one client on one replica and another on another. There is no
+which is what lets a test put one client on one replica and another on another; their admin
+listeners are on 6081, 6082 and 6083. There is no
 sticky session: any replica can serve any document, and a client that reconnects resyncs from
 its state vector.
 
-`GET /statsz` returns the node id and its cluster counters, including how many envelopes it
-published and how many it filtered out as its own.
+### Watching it
+
+`-admin-addr` (default `127.0.0.1:6060`) serves the endpoints that are for operators rather
+than for clients:
+
+- `/metrics` — Prometheus. Connections, rooms, message counts by type, how long integrating an
+  update takes, how long the database takes, and what the server refused.
+- `/statsz` — the cluster counters as JSON: how many envelopes this node published and how many
+  it filtered out as its own.
+- `/debug/pprof` — the Go profiler. `-pprof=false` turns it off.
+
+They are deliberately not on the port clients connect to. pprof dumps the heap, prints the
+command line and will block the process for a thirty-second CPU profile on request, so the
+deployment gets to decide who can reach it. `/healthz` is on both, because a load balancer
+probes the port it sends traffic to.
 
 ### Tokens
 
@@ -140,8 +155,46 @@ replica's counters at the end, which is where "no update looped" is checked:
 ```sh
 node tools/soak/soak.mjs --clients 6 --duration 300 \
   --urls ws://127.0.0.1:8081,ws://127.0.0.1:8082,ws://127.0.0.1:8083 \
-  --stats http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083
+  --stats http://127.0.0.1:6081,http://127.0.0.1:6082,http://127.0.0.1:6083
 ```
+
+### Load
+
+`cmd/ycollab-load` opens a lot of connections and reports how long an update takes to travel
+from one client to another in the same room. It speaks the protocol directly rather than
+running real Yjs clients — a real client costs a document and a provider, so a few hundred of
+them make the generator the bottleneck. Correctness is what `tools/soak` is for.
+
+```sh
+go run ./cmd/server -addr 127.0.0.1:8080 &
+go run ./cmd/ycollab-load -url ws://127.0.0.1:8080 -clients 1000 -rooms 100 -duration 30s -rate 4
+```
+
+On the development machine (Windows, 1000 connections over 100 rooms, four updates per second
+each):
+
+```
+updates sent       118984 (3966/s)
+updates delivered  1070856 (35694/s), expected 1070856
+delivered ratio    1.0000
+errors             0
+propagation p99    511µs
+propagation max    4.078ms
+clock resolution   530.5µs
+```
+
+and with the fanout concentrated — 200 clients in two rooms, so every update goes to 99 peers:
+
+```
+updates delivered  1960101 (98003/s), expected 1960101
+delivered ratio    1.0000
+propagation p95    670µs
+propagation p99    1.926ms
+```
+
+`delivered ratio 1.0000` is the part that matters: every update reached every other client in
+its room, so nothing was dropped for backpressure. The server's own metrics put the mean cost
+of integrating one update at about a microsecond.
 
 The Go integration tests cover the same ground by starting real server processes; they need
 Redis and skip without it:
@@ -157,6 +210,7 @@ YCOLLAB_TEST_REDIS_URL=redis://127.0.0.1:6380 go test ./... -race
 cmd/server            the server binary
 cmd/ycollab-dump      re-encodes fixtures with the Go engine, for tools/verify
 cmd/ycollab-token     mints tokens for local use
+cmd/ycollab-load      opens many connections and measures propagation latency
 internal/crdt         the CRDT engine; standard library only
 internal/crdt/lib0    varUint, varInt, varString, varUint8Array and the any codec
 internal/protocol     sync and awareness framing; pure bytes, no I/O
@@ -165,6 +219,7 @@ internal/gateway      WebSocket lifecycle, pumps, backpressure
 internal/store        PostgreSQL: snapshots and the append-only update log
 internal/cluster      Redis Pub/Sub fanout between replicas
 internal/auth         token verification: who may open which document, and how
+internal/metrics      Prometheus collectors
 tools/fixturegen      Node: generates the binary fixtures from real yjs
 tools/verify          Node: applies Go-produced updates in real yjs
 tools/soak            Node: drives real clients at a running server

@@ -510,6 +510,63 @@ refusing to start without one, which would make the demo a configuration exercis
 and push people towards checking in a secret. Rejected also: staying quiet, which
 is how an open server reaches production.
 
+### D65. The operator endpoints live on their own listener
+`/metrics`, `/statsz` and `/debug/pprof` are served on `-admin-addr`, which
+defaults to `127.0.0.1:6060`, and none of them is on the port clients connect to.
+pprof will dump the heap, print the command line the process was started with,
+and block the process for a thirty-second CPU profile on request: on a public
+port that is both an information leak and a way for anyone to stall the server.
+A separate listener lets the deployment decide who can reach them - a bind
+address, a firewall rule, or in Kubernetes simply not naming the port in the
+Service. `-pprof=false` turns the profiler off while leaving the metrics, for a
+deployment that cannot isolate the port. Rejected: serving them on the main port
+behind a path prefix, which is one misconfigured proxy away from being public.
+`/healthz` stays on both, because a load balancer probes the port it sends
+traffic to.
+
+### D66. Metrics are a struct that is passed in, not package-level variables
+`metrics.New(registry)` returns every collector, and the packages that report
+into it take one in their config. That costs two config fields and buys two
+things: a test builds a fresh set against its own registry and asserts on what
+was recorded, and `metrics.Nop()` exists - registered nowhere - so no call site
+ever checks for nil before counting something. Rejected: package-level
+collectors on the default registry, which is what most Go code does and which
+makes two tests in one binary collide.
+
+### D67. Labels are a fixed small set, never a document name
+Close codes are labelled, message types are labelled, refusal reasons are
+labelled with a slug rather than the error text. No metric carries a room name
+or a client id. A label whose values come from user input is how a metrics
+endpoint becomes the thing that takes the server down: cardinality is memory
+here and in whatever scrapes it.
+
+### D68. The load bot speaks the wire protocol, not Yjs
+`cmd/ycollab-load` builds updates by hand and holds a socket per client, so a
+thousand clients cost a thousand goroutines and a few megabytes. Rejected:
+driving real `y-websocket` clients, which is what `tools/soak` does and is the
+right tool for *correctness* - but a real client costs a document, a provider and
+a couple of megabytes, so a few hundred of them make the load generator the
+bottleneck and measure nothing about the server. Wire correctness is already
+covered byte for byte by the fixtures, so the bot is free to be cheap.
+
+Its update builder is the one place outside `internal/crdt` that writes Yjs
+structs, which is a real risk of drift, so it self-tests at startup: it builds a
+chain, integrates it with the actual engine and checks the text. A malformed
+builder fails there instead of as a stream of 1002 closes.
+
+### D69. The bot connects in waves
+Dialling a thousand sockets at once overran the listen backlog and the kernel
+refused a fifth of them - which measures the accept queue, not the server, and is
+not what any real population of clients does. `-connect-at-once` bounds the dials
+in flight.
+
+### D70. The latency report states the clock's resolution
+The propagation percentiles are printed next to the smallest step this machine's
+monotonic clock can take, measured at startup. On the development machine that
+step is about half a millisecond, so a p50 below it is reported as `0s` - which
+without the resolution line reads either as a bug or as a boast, and is neither.
+Rejected: printing microseconds the clock cannot resolve.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an
