@@ -36,7 +36,7 @@ type statsz struct {
 
 func (s *server) stats(t *testing.T) statsz {
 	t.Helper()
-	resp, err := http.Get("http://" + s.addr + "/statsz")
+	resp, err := http.Get("http://" + s.admin + "/statsz")
 	if err != nil {
 		t.Fatalf("statsz: %v", err)
 	}

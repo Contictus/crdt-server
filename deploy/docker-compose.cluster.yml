@@ -4,7 +4,7 @@
 #   docker compose -f deploy/docker-compose.cluster.yml up -d --build
 #   node tools/soak/soak.mjs --clients 6 --duration 300 \
 #     --urls ws://127.0.0.1:8081,ws://127.0.0.1:8082,ws://127.0.0.1:8083 \
-#     --stats http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083
+#     --stats http://127.0.0.1:6081,http://127.0.0.1:6082,http://127.0.0.1:6083
 #
 # Each replica is published on its own port as well as being behind Caddy. That
 # is what lets a test put client A on one replica and client B on another and
@@ -46,6 +46,12 @@ services:
       dockerfile: deploy/Dockerfile
     command:
       - -addr=:8080
+      # The admin listener binds to all interfaces here, unlike its localhost
+      # default, because "localhost" inside a container means the container. It
+      # is still a separate port, so the compose file decides who sees it - and
+      # in a real deployment that port would not be published at all, only
+      # scraped from inside the network.
+      - -admin-addr=:6060
       # The browser demo runs on the Vite dev server, so its origin has to be
       # allowed explicitly; a same-origin default would reject it.
       - -origins=localhost:5173,127.0.0.1:5173,localhost:8080,127.0.0.1:8080
@@ -69,6 +75,7 @@ services:
       retries: 15
     ports:
       - "127.0.0.1:8081:8080"
+      - "127.0.0.1:6081:6060"
 
   # The other two are the same process with a different published port. A YAML
   # anchor rather than three copies: three copies is how one of them ends up with
@@ -77,11 +84,13 @@ services:
     <<: *replica
     ports:
       - "127.0.0.1:8082:8080"
+      - "127.0.0.1:6082:6060"
 
   ycollab-3:
     <<: *replica
     ports:
       - "127.0.0.1:8083:8080"
+      - "127.0.0.1:6083:6060"
 
   caddy:
     image: caddy:2-alpine

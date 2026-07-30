@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,9 +24,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
+
 	"github.com/mesutokul/ycollab/internal/auth"
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/gateway"
+	"github.com/mesutokul/ycollab/internal/metrics"
 	"github.com/mesutokul/ycollab/internal/room"
 	"github.com/mesutokul/ycollab/internal/store"
 )
@@ -62,6 +65,9 @@ func run() error {
 		jwtLeeway        = flag.Duration("jwt-leeway", auth.DefaultLeeway, "clock skew allowed between whatever mints tokens and this server")
 		jwtMaxLifetime   = flag.Duration("jwt-max-lifetime", 0, "reject tokens valid for longer than this; 0 accepts any expiry")
 		jwtRequireExpiry = flag.Bool("jwt-require-expiry", true, "reject tokens that never expire")
+
+		adminAddr = flag.String("admin-addr", envOr("YCOLLAB_ADMIN_ADDR", "127.0.0.1:6060"), "address for /metrics, /statsz and /debug/pprof; empty disables them")
+		pprof     = flag.Bool("pprof", true, "serve /debug/pprof on the admin address")
 	)
 	flag.Parse()
 
@@ -71,6 +77,16 @@ func run() error {
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
+
+	// One registry per process, built here rather than taken from prometheus's
+	// default, so what the endpoint exposes is exactly what this server put in
+	// it plus the Go and process collectors we ask for.
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		promcollectors.NewGoCollector(),
+		promcollectors.NewProcessCollector(promcollectors.ProcessCollectorOpts{}),
+	)
+	collectors := metrics.New(registry)
 
 	// Rooms stop when this context is cancelled; the HTTP server is drained
 	// first so that connections get a close frame rather than a dead socket.
@@ -124,6 +140,7 @@ func run() error {
 			FlushInterval: *flushInterval,
 			Bus:           bus,
 			AntiEntropy:   *antiEntropy,
+			Metrics:       collectors,
 			Logger:        log,
 		},
 	})
@@ -145,27 +162,25 @@ func run() error {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintln(w, "ok")
 	})
-	// /statsz is what makes the cluster's behaviour checkable from outside: the
-	// counters say how many envelopes this node published and how many it
-	// filtered out as its own. Prometheus is Phase 6; this is deliberately the
-	// smallest thing a test can read.
-	mux.HandleFunc("/statsz", func(w http.ResponseWriter, _ *http.Request) {
-		body := map[string]any{
-			"node_id": manager.NodeID(),
-			"rooms":   manager.Len(),
-			"cluster": manager.Stats().Snapshot(),
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(body); err != nil {
-			log.Debug("could not write stats", "err", err)
-		}
-	})
 	mux.Handle("/", gateway.New(gateway.Config{
 		Rooms:     manager,
 		Origins:   splitList(*origins),
 		Authorize: authorize,
+		Metrics:   collectors,
 		Logger:    log,
 	}))
+
+	adminSrv, err := startAdmin(*adminAddr, *pprof, registry, manager, log)
+	if err != nil {
+		return err
+	}
+	if adminSrv != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = adminSrv.Shutdown(ctx)
+		}()
+	}
 
 	srv := &http.Server{
 		Addr:              *addr,

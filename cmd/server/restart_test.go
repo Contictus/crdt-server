@@ -33,10 +33,13 @@ import (
 const dbEnv = "YCOLLAB_TEST_DATABASE_URL"
 
 type server struct {
-	t    *testing.T
-	cmd  *exec.Cmd
-	addr string
-	logs *bytes.Buffer
+	t   *testing.T
+	cmd *exec.Cmd
+	// addr serves clients; admin serves /metrics, /statsz and /debug/pprof on
+	// its own listener, which is where the operator endpoints live.
+	addr  string
+	admin string
+	logs  *bytes.Buffer
 }
 
 // buildServer compiles the binary once per test binary run.
@@ -67,8 +70,10 @@ func freePort(t *testing.T) string {
 func startServer(t *testing.T, binary, addr, dbURL string, extra ...string) *server {
 	t.Helper()
 	logs := &bytes.Buffer{}
+	admin := freePort(t)
 	args := append([]string{
 		"-addr", addr,
+		"-admin-addr", admin,
 		"-database-url", dbURL,
 		// Short intervals so the test does not have to wait for a default that
 		// was chosen for production.
@@ -82,7 +87,7 @@ func startServer(t *testing.T, binary, addr, dbURL string, extra ...string) *ser
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	s := &server{t: t, cmd: cmd, addr: addr, logs: logs}
+	s := &server{t: t, cmd: cmd, addr: addr, admin: admin, logs: logs}
 	t.Cleanup(s.kill)
 	s.waitReady()
 	return s
