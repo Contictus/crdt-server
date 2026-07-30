@@ -56,8 +56,10 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # Pinned to the version this was actually run against: an analyser that
+      # updates itself turns an unrelated change into a red build.
       - name: staticcheck
-        run: go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
 
       # The race detector is not optional here: the whole design is one actor
       # goroutine per document with no locks, and that is a claim, not a fact,
