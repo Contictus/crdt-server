@@ -171,8 +171,12 @@ curl -s $ADMIN/documents/my-doc > my-doc.bin
 # Read it as text.
 curl -s "$ADMIN/documents/my-doc?format=json" | jq
 
+# What subdocuments does it reference? They are separate documents, under their
+# guids, and this is the only place they are named.
+curl -s "$ADMIN/documents/my-doc?format=json" | jq -r '.subdocs[]'
+
 # Delete it, from memory and from the database. Refused with 409 while somebody
-# is editing it.
+# is editing it. This does NOT delete subdocuments - see below.
 curl -s -X DELETE $ADMIN/documents/my-doc
 
 # Merge an update into it - restore, or seed from a template.
@@ -299,6 +303,24 @@ curl -sf -X POST "$ADMIN/documents/my-doc/versions?label=before+the+migration"
 
 `201` means a version was written, `200` means the document has not changed
 since the last one and there was nothing new to store. Both are success.
+
+### Documents with subdocuments
+
+A subdocument is a separate document under its guid, so neither backing up nor
+deleting a parent touches them. Read the guids first and treat each as a
+document in its own right:
+
+```bash
+for guid in $(curl -sf "$ADMIN/documents/my-book?format=json" | jq -r '.subdocs[]'); do
+  curl -sf "$ADMIN/documents/$guid" > "$guid.bin"
+done
+```
+
+The same list is what to walk before a delete. Nothing cascades: the server will
+not remove documents the caller did not name.
+
+Note this only finds the *direct* references. A subdocument can itself have
+subdocuments, so walk the tree if your application nests them.
 
 ### What a backup does not cover
 

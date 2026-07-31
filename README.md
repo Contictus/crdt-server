@@ -226,6 +226,51 @@ published to the other replicas, so nobody is left building on a version the ser
 has. A body that is not an update, or one that carries nothing, is refused with 400 rather than
 written and reported as a success.
 
+### Subdocuments
+
+**A subdocument is an ordinary document here, named by its guid.** That is not a decision this
+server made — it is how Yjs works. `y-websocket` does not mention subdocuments at all: `Y.Doc`
+emits a `subdocs` event and the application opens a second provider for each one, naming the
+room after the guid:
+
+```js
+doc.on('subdocs', ({ added }) => {
+  added.forEach(sub => new WebsocketProvider('ws://localhost:8080', sub.guid, sub))
+})
+```
+
+So syncing works with no server-side feature, and the honest thing was to prove that rather than
+claim it — `TestASubdocumentSyncsAsADocumentOfItsOwn` does, against a real Yjs fixture carrying
+a `ContentDoc`.
+
+What the server *does* add is the link between the two, because **a parent document is the only
+thing that names its subdocuments**:
+
+```bash
+curl -s "$ADMIN/documents/my-book?format=json" | jq .subdocs
+# ["chapter-one"]
+```
+
+Removed references do not appear — a subdocument whose reference was deleted is no longer part
+of the document, which is exactly the distinction someone deciding what to delete needs.
+
+**Two traps worth stating plainly:**
+
+- **A backup of a parent is not a backup of the whole.** `GET /documents/my-book` returns the
+  parent only; its subdocuments are separate documents with their own bytes and their own
+  version history. Back up the guids too.
+- **Deleting a parent orphans its subdocuments.** `DELETE` does not cascade across documents,
+  because it cannot: the server would have to read the parent to find out what to delete, and a
+  delete that quietly removes documents you did not name is worse than one that does not. Read
+  `subdocs` first and delete them yourself.
+
+**Tokens.** With `-jwt-secret` set, a token names one document, so a client needs one per
+subdocument. That is the same round trip the application already makes to get the parent's
+token, made again when the `subdocs` event fires — the app knows the guid at that point, because
+it just received it. The server deliberately does not infer "and its subdocuments" from a parent
+token: it would have to load the parent on every connection to check, and a token whose scope
+grows as the document changes is not a scope anybody can reason about.
+
 ### Version history
 
 `-version-interval 1h` keeps a copy of each document as it changes, so there is an answer to

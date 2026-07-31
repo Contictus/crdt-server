@@ -264,6 +264,15 @@ type document struct {
 	Clients  *int       `json:"clients,omitempty"`
 	Bytes    int        `json:"bytes"`
 	Roots    []rootView `json:"roots"`
+	// Subdocs are the guids of the subdocuments this document references.
+	//
+	// They are separate documents on this server, each under its own guid as
+	// its name, because that is how Yjs syncs them - the client opens a second
+	// connection and names the room after the guid. Listing them here is the
+	// only way anything else can find out: a parent document is the only thing
+	// that names its subdocuments, so without this, deleting a document
+	// orphans them and a backup of it is not a backup of the whole.
+	Subdocs []string `json:"subdocs"`
 }
 
 // rootView is one top-level shared type.
@@ -297,6 +306,10 @@ func describe(name string, snapshot room.Snapshot) (document, error) {
 		Resident:    snapshot.Resident,
 		Bytes:       len(snapshot.Update),
 		Roots:       []rootView{},
+		Subdocs:     doc.Subdocs(),
+	}
+	if out.Subdocs == nil {
+		out.Subdocs = []string{}
 	}
 	if snapshot.Clients >= 0 {
 		clients := snapshot.Clients

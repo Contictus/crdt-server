@@ -1,0 +1,114 @@
+{
+  "scenario": "subdocument",
+  "notes": "ContentDoc (ref 9): a parent document embedding two subdocuments, one of them removed. The guids are fixed so the Go side can assert on them; Yjs would otherwise generate a uuid per run.",
+  "clients": [
+    {
+      "label": "a",
+      "clientID": 1001,
+      "gc": true
+    }
+  ],
+  "gc": true,
+  "state": {
+    "types": {
+      "outline": {
+        "kind": "map",
+        "json": {
+          "chapter": {
+            "$subdoc": "chapter-one"
+          }
+        }
+      },
+      "title": {
+        "kind": "text",
+        "string": "A book",
+        "delta": [
+          {
+            "insert": "A book"
+          }
+        ]
+      }
+    },
+    "stateVector": {
+      "1001": 8
+    },
+    "deleteSet": {
+      "1001": [
+        [
+          1,
+          1
+        ]
+      ]
+    },
+    "structCount": 3
+  },
+  "stateBin": {
+    "structs": [
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 0
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "outline"
+        },
+        "parentSub": "chapter",
+        "content": {
+          "ref": 9,
+          "kind": "ContentDoc",
+          "guid": "chapter-one"
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 1
+        },
+        "len": 1,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "outline"
+        },
+        "parentSub": "appendix",
+        "content": {
+          "ref": 1,
+          "kind": "ContentDeleted",
+          "len": 1
+        }
+      },
+      {
+        "kind": "Item",
+        "id": {
+          "client": 1001,
+          "clock": 2
+        },
+        "len": 6,
+        "origin": null,
+        "rightOrigin": null,
+        "parent": {
+          "key": "title"
+        },
+        "parentSub": null,
+        "content": {
+          "ref": 4,
+          "kind": "ContentString",
+          "str": "A book"
+        }
+      }
+    ],
+    "deleteSet": {
+      "1001": [
+        [
+          1,
+          1
+        ]
+      ]
+    }
+  }
+}

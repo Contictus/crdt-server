@@ -321,5 +321,26 @@ export const scenarios = [
         }
       }
     }
-  }
+  },
+
+  {
+    name: 'subdocument',
+    notes: 'ContentDoc (ref 9): a parent document embedding two subdocuments, one of them removed. The guids are fixed so the Go side can assert on them; Yjs would otherwise generate a uuid per run.',
+    build: (h) => {
+      const a = h.doc('a', 1001)
+      const outline = a.getMap('outline')
+      // Y.Doc takes a guid, so the fixture is reproducible. This is what a real
+      // client does when it names a subdocument itself rather than letting Yjs
+      // invent one.
+      const chapter = new Y.Doc({ guid: 'chapter-one' })
+      const appendix = new Y.Doc({ guid: 'appendix' })
+      outline.set('chapter', chapter)
+      outline.set('appendix', appendix)
+      a.getText('title').insert(0, 'A book')
+      // One is removed again, so the Go side has to tell a live subdocument
+      // reference from a deleted one.
+      outline.delete('appendix')
+      return { doc: a }
+    }
+  },
 ]

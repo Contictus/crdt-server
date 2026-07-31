@@ -1,0 +1,105 @@
+[
+  {
+    "file": "update-000.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 0
+          },
+          "len": 1,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "outline"
+          },
+          "parentSub": "chapter",
+          "content": {
+            "ref": 9,
+            "kind": "ContentDoc",
+            "guid": "chapter-one"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-001.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 1
+          },
+          "len": 1,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "outline"
+          },
+          "parentSub": "appendix",
+          "content": {
+            "ref": 9,
+            "kind": "ContentDoc",
+            "guid": "appendix"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-002.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [
+        {
+          "kind": "Item",
+          "id": {
+            "client": 1001,
+            "clock": 2
+          },
+          "len": 6,
+          "origin": null,
+          "rightOrigin": null,
+          "parent": {
+            "key": "title"
+          },
+          "parentSub": null,
+          "content": {
+            "ref": 4,
+            "kind": "ContentString",
+            "str": "A book"
+          }
+        }
+      ],
+      "deleteSet": {}
+    }
+  },
+  {
+    "file": "update-003.bin",
+    "doc": "a",
+    "local": true,
+    "decoded": {
+      "structs": [],
+      "deleteSet": {
+        "1001": [
+          [
+            1,
+            1
+          ]
+        ]
+      }
+    }
+  }
+]

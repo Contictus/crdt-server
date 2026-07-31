@@ -407,6 +407,28 @@
       ]
     },
     {
+      "name": "subdocument",
+      "notes": "ContentDoc (ref 9): a parent document embedding two subdocuments, one of them removed. The guids are fixed so the Go side can assert on them; Yjs would otherwise generate a uuid per run.",
+      "clients": [
+        {
+          "label": "a",
+          "clientID": 1001,
+          "gc": true
+        }
+      ],
+      "files": [
+        "msg-sync-step1.bin",
+        "msg-sync-step2.bin",
+        "msg-update.bin",
+        "state.bin",
+        "sv.bin",
+        "update-000.bin",
+        "update-001.bin",
+        "update-002.bin",
+        "update-003.bin"
+      ]
+    },
+    {
       "name": "awareness",
       "notes": "awareness protocol",
       "clients": [],
