@@ -1515,6 +1515,66 @@ The one case that must not be silent: a server with no bucket configured meeting
 row that names one. That is an error saying so, because the alternative - an empty
 document - reads exactly like a document somebody had emptied.
 
+### D128. The memory bound is bytes, and the y-redis rewrite was not the answer
+I had this listed as the architectural change - stateless workers, documents in
+Redis streams, no resident document, the shape y-redis has. Having got here, I do
+not think that is the right work, and the reason is worth writing down.
+
+That design does not remove the memory. It relocates it into Redis and puts a
+network round trip on the update path, and it makes Redis a hard dependency of
+*reading a document* - where today it is fanout only, and losing it degrades to
+"replicas cannot see each other" rather than "nothing loads". For a server whose
+apply time is 630 ns because the document is in memory, that is a large price for
+a problem that turns out to be mostly an accounting failure.
+
+The accounting failure: the only bound was `-max-rooms`, a count. An operator
+sizing a pod writes bytes; a count of documents tells them nothing, and it makes
+eviction pick badly - the least recently used tiny document goes while a huge one
+nobody has touched stays, because they weigh the same to a counter.
+
+So `-max-memory`, measured and enforced. What it does *not* do is stated in the
+README rather than implied: it is not a hard guarantee, because a room with
+somebody in it is never evicted, and it does not lift the ceiling, because a
+replica serving a document holds all of it. Raising the ceiling is consistent
+routing at the ingress, which needs no code here at all.
+
+### D129. The estimate is arithmetic, and it was checked against real memory
+A memory budget is only worth having if the number it spends is close to what the
+process actually allocates. So the estimate is built from `unsafe.Sizeof` on the
+item and content headers plus what those headers point at, rather than a
+structs-times-a-constant guess.
+
+Measured against `runtime.MemStats` across the corpora: **0.91 to 1.00** of real
+heap growth. A test asserts it stays between 0.5x and 2.5x, which is deliberately
+loose - it guards against the estimate becoming decorative, not against the
+allocator having overhead.
+
+It is a floor and says so: it does not model size classes, map buckets, or spans
+the collector is holding. The README tells operators to leave headroom rather
+than pretending otherwise.
+
+`Content` was not widened with a `Bytes()` method for this. That interface is the
+wire contract - every type in it exists because the format has a ref for it - and
+a question about heap layout does not belong there. A type switch in one file
+does the job and keeps the two concerns apart.
+
+### D130. The budget is enforced on a timer, not only when a document is opened
+The first implementation checked the budget on the join path, which is where the
+room-count cap is checked. A test caught that this bounds nothing: it only fires
+when a *new* document is opened, and documents grow. A server with a stable set
+of rooms and people typing into them sails past the budget and is never asked
+about it again.
+
+So there is a sweep on the same interval the rooms re-measure on. The join-path
+check stays, because it is free and it keeps a burst of new documents from
+overshooting between sweeps.
+
+A second defect, found in the field rather than by a test: a room measures itself
+when it loads, which for a new document is a measurement of nothing - and the
+interval then blocked re-measuring for fifteen seconds. Twenty rooms under load
+reported zero bytes. The interval now throttles re-measuring a weight that is
+already known, and never blocks learning one.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

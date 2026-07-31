@@ -26,6 +26,13 @@ type ManagerConfig struct {
 	Room Config
 	// MaxRooms caps resident rooms. Zero means unlimited.
 	MaxRooms int
+	// MaxMemory caps what the resident documents are estimated to cost, in
+	// bytes. Zero means unlimited.
+	//
+	// It is the bound that matters, because a pod's limit is written in bytes
+	// and MaxRooms is written in documents. Both can be set; whichever is
+	// reached first evicts.
+	MaxMemory int64
 }
 
 // A Manager owns the set of resident rooms and starts one goroutine per room.
@@ -42,7 +49,10 @@ type Manager struct {
 	// so two joins in the same nanosecond still order.
 	used  map[string]uint64
 	clock uint64
-	wg    sync.WaitGroup
+	// pressure names whichever bound last forced an eviction, for the metric.
+	// Written and read under mu, on the path that has just decided to evict.
+	pressure string
+	wg       sync.WaitGroup
 }
 
 // NewManager returns a manager whose rooms stop when ctx is cancelled.
@@ -61,12 +71,20 @@ func NewManager(ctx context.Context, cfg ManagerConfig) *Manager {
 	if cfg.Room.Metrics == nil {
 		cfg.Room.Metrics = metrics.Nop()
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:   cfg,
 		ctx:   ctx,
 		rooms: make(map[string]*Room),
 		used:  make(map[string]uint64),
 	}
+	if cfg.MaxMemory > 0 {
+		every := cfg.Room.UsageInterval
+		if every <= 0 {
+			every = DefaultUsageInterval
+		}
+		go m.sweepBudget(ctx, every)
+	}
+	return m
 }
 
 // ErrWrongOwner means the document exists and belongs to another tenant. The
@@ -113,10 +131,14 @@ func (m *Manager) get(name, owner string) (*Room, error) {
 		if r != nil {
 			return r, nil
 		}
-		// At the cap. Evict the least recently used idle room and try again;
-		// with persistence in place that costs a snapshot write, not the
-		// document. Done outside the lock, because evicting waits for the room
-		// to write itself out.
+		// At a cap - either the room count or the memory budget. Evict the least
+		// recently used idle room and try again; with persistence in place that
+		// costs a snapshot write, not the document. Done outside the lock,
+		// because evicting waits for the room to write itself out.
+		//
+		// When nothing can be evicted, every resident room has somebody
+		// connected to it, and the honest answer is to refuse rather than to
+		// exceed the bound quietly.
 		if !m.evictOne(candidates) {
 			return nil, ErrTooManyRooms
 		}
@@ -159,16 +181,14 @@ func (m *Manager) tryGet(name, owner string) (*Room, []*Room, error) {
 		return r, nil, nil
 	}
 	if m.cfg.MaxRooms > 0 && len(m.rooms) >= m.cfg.MaxRooms {
-		names := make([]string, 0, len(m.rooms))
-		for n := range m.rooms {
-			names = append(names, n)
-		}
-		sort.Slice(names, func(i, j int) bool { return m.used[names[i]] < m.used[names[j]] })
-		rooms := make([]*Room, 0, len(names))
-		for _, n := range names {
-			rooms = append(rooms, m.rooms[n])
-		}
-		return nil, rooms, nil
+		m.pressure = "cap"
+		return nil, m.byLeastRecentlyUsed(), nil
+	}
+	// The byte budget is checked before the room is created rather than after,
+	// so the document about to be opened is never a candidate to evict.
+	if over, candidates := m.overBudget(); over {
+		m.pressure = "budget"
+		return nil, candidates, nil
 	}
 	m.touch(name)
 	cfg := m.cfg.Room
@@ -240,6 +260,21 @@ func (m *Manager) settleOwner(name string, want store.UUID) error {
 // rather than held.
 const settleTimeout = 10 * time.Second
 
+// byLeastRecentlyUsed lists the resident rooms, oldest use first. Called with
+// the lock held.
+func (m *Manager) byLeastRecentlyUsed() []*Room {
+	names := make([]string, 0, len(m.rooms))
+	for n := range m.rooms {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool { return m.used[names[i]] < m.used[names[j]] })
+	rooms := make([]*Room, 0, len(names))
+	for _, n := range names {
+		rooms = append(rooms, m.rooms[n])
+	}
+	return rooms
+}
+
 // touch records that a room was just used. Called with the lock held.
 func (m *Manager) touch(name string) {
 	m.clock++
@@ -248,9 +283,16 @@ func (m *Manager) touch(name string) {
 
 // evictOne stops the first idle room in the list, reporting whether any went.
 func (m *Manager) evictOne(candidates []*Room) bool {
+	m.mu.Lock()
+	reason := m.pressure
+	m.mu.Unlock()
+	if reason == "" {
+		reason = "cap"
+	}
 	for _, r := range candidates {
 		if r.EvictIfIdle() {
 			<-r.Done()
+			m.cfg.Room.Metrics.RoomsEvicted.WithLabelValues(reason).Inc()
 			return true
 		}
 	}

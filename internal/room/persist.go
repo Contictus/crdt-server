@@ -101,8 +101,15 @@ func (r *Room) load(ctx context.Context) error {
 	// loads and then evicts would write a snapshot that deletes nothing, and
 	// the log would never be consolidated.
 	r.folded = append(r.folded, doc.Seqs...)
+	// Measured here rather than waiting for the first tick: a room that is
+	// loaded and never edited would otherwise weigh nothing to the budget for
+	// its first interval, which is exactly when a wave of them is being opened.
+	r.touchDocument()
+	r.usage.measured = time.Time{}
+	r.measure(r.cfg.Now())
 	r.log.Info("loaded document",
-		"snapshot", len(doc.Snapshot), "updates", len(doc.Updates), "pending", r.doc.PendingCount())
+		"snapshot", len(doc.Snapshot), "updates", len(doc.Updates),
+		"pending", r.doc.PendingCount(), "bytes", r.Bytes(), "structs", r.Structs())
 	return nil
 }
 

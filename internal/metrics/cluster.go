@@ -75,3 +75,44 @@ func (c *clusterCollector) Collect(ch chan<- prometheus.Metric) {
 		ch <- prometheus.MustNewConstMetric(c.descs[name], prometheus.CounterValue, float64(snapshot[name]))
 	}
 }
+
+// residentCollector reports what the documents in memory cost, read from the
+// room manager at scrape time.
+//
+// A collector rather than a gauge the manager writes into, for the same reason
+// the cluster counters are one: the manager already knows the answer, and
+// mirroring it into a second place is how /metrics and /statsz come to disagree.
+type residentCollector struct {
+	bytes  func() int64
+	budget int64
+	desc   *prometheus.Desc
+	limit  *prometheus.Desc
+}
+
+// NewResidentBytesCollector reports the estimated heap cost of the documents
+// currently held in memory. It is the figure -max-memory is spent against, so it
+// is the one to put next to a pod's limit.
+// budget is -max-memory, exported alongside the figure it bounds so an alert can
+// compare the two without the limit being written out a second time in the alert
+// rule - where it would drift from the flag the moment anybody changed it.
+func NewResidentBytesCollector(bytes func() int64, budget int64) prometheus.Collector {
+	return &residentCollector{
+		bytes:  bytes,
+		budget: budget,
+		desc: prometheus.NewDesc("ycollab_rooms_resident_bytes",
+			"Estimated heap cost of the documents currently in memory. A floor: it does not model the allocator.",
+			nil, nil),
+		limit: prometheus.NewDesc("ycollab_max_memory_bytes",
+			"The -max-memory budget, or 0 when there is none.", nil, nil),
+	}
+}
+
+func (c *residentCollector) Describe(ch chan<- *prometheus.Desc) {
+	ch <- c.desc
+	ch <- c.limit
+}
+
+func (c *residentCollector) Collect(ch chan<- prometheus.Metric) {
+	ch <- prometheus.MustNewConstMetric(c.desc, prometheus.GaugeValue, float64(c.bytes()))
+	ch <- prometheus.MustNewConstMetric(c.limit, prometheus.GaugeValue, float64(c.budget))
+}

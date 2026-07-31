@@ -77,6 +77,12 @@ type Metrics struct {
 	// cannot be summed across replicas and this one is a claim about cost that
 	// an operator should be able to check against their own documents.
 	BlobBytes *prometheus.CounterVec
+
+	// RoomsEvicted counts rooms dropped from memory, by what pushed them out.
+	// "idle" is the ordinary case; "budget" and "cap" mean a bound was reached,
+	// which is the difference between a server with headroom and one at its
+	// limit.
+	RoomsEvicted *prometheus.CounterVec
 }
 
 // New registers a set of collectors and returns them.
@@ -222,6 +228,11 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help:    "Time for one call to the authorization endpoint. A client is waiting on this.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 3, 10),
 		}),
+
+		RoomsEvicted: factory.counterVec(prometheus.CounterOpts{
+			Name: "ycollab_rooms_evicted_total",
+			Help: "Documents dropped from memory, by reason: idle, cap or budget.",
+		}, []string{"reason"}),
 
 		BlobBytes: factory.counterVec(prometheus.CounterOpts{
 			Name: "ycollab_store_blob_bytes_total",

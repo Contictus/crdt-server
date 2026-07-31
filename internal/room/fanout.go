@@ -154,6 +154,7 @@ func (r *Room) remoteEnvelope(env cluster.Envelope) {
 // (see DECISIONS C6) - which is the part of Phase 3 that only starts to matter
 // here.
 func (r *Room) remoteUpdate(update []byte) {
+	r.touchDocument()
 	if err := r.doc.ApplyUpdate(update); err != nil {
 		// There is no connection to blame and nothing to disconnect. Say so and
 		// carry on: the document is still consistent, and the next anti-entropy

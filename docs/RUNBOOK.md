@@ -703,3 +703,45 @@ what you show somebody who asks whether the request was carried out.
    They cannot have it: names are global. Namespace them in the application
    (`acme/notes` is not allowed — the path is the whole name — but `acme-notes`
    is).
+
+## YcollabOverMemoryBudget
+
+`-max-memory` is set and the replica cannot evict its way back under it.
+
+The budget is not a hard guarantee, and this alert is what that means in
+practice: **a room with somebody connected to it is never evicted.** Firing means
+every resident document is busy. The server keeps serving; the next thing to
+happen, if it keeps growing, is the out-of-memory killer.
+
+1. How far over, and is it growing?
+
+   ```
+   ycollab_rooms_resident_bytes / ycollab_max_memory_bytes
+   ```
+
+   Flat and slightly over is a budget set a little too tight. Climbing steadily
+   is documents growing, and it will not stop on its own.
+
+2. `ycollab_rooms_evicted_total{reason="budget"}` flat while the gauge is over
+   confirms it: nothing is evictable.
+3. `ycollab_rooms_resident` divided into the byte figure gives the average
+   document. A handful of very large documents is a different problem from a lot
+   of ordinary ones — the eviction log lines carry `bytes=` and `structs=` per
+   room, so `grep 'evicting room'` ranks them.
+
+**What to do, in order of how quickly it works:**
+
+- Raise `-max-memory` if the pod has headroom. This is a bound, not a
+  measurement: setting it above what the container allows just moves the failure.
+- Add replicas. Documents move to whichever replica their clients land on, so
+  more replicas spread the load — but each still holds whatever it is asked for,
+  which is the next point.
+- **Route each document to one replica consistently.** This is the real fix and
+  it needs no change here: with an ingress that hashes on the URL path (`hash
+  $uri consistent` in nginx), N replicas hold N times the documents rather than
+  each holding an arbitrary share. A hash that is occasionally wrong costs a
+  duplicate copy, not a correctness problem.
+
+**What not to do:** lowering `-idle-timeout` does not help while the rooms are
+busy — idle eviction only applies to rooms nobody is in, which is precisely the
+set that is already empty when this fires.

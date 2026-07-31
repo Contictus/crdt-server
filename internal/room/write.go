@@ -47,6 +47,7 @@ func (r *Room) Merge(update []byte) error {
 
 // merge runs on the room goroutine.
 func (r *Room) merge(c mergeCmd) {
+	r.touchDocument()
 	if err := r.doc.ApplyUpdate(c.update); err != nil {
 		r.metrics.ApplyFailed.Inc()
 		c.reply <- err

@@ -52,6 +52,7 @@ func run() error {
 		idleTimeout  = flag.Duration("idle-timeout", room.DefaultIdleTimeout, "how long an empty room stays resident")
 		awarenessTTL = flag.Duration("awareness-ttl", 30*time.Second, "drop a client's cursor after this much silence")
 		maxRooms     = flag.Int("max-rooms", 0, "cap on resident rooms; 0 means unlimited")
+		maxMemory    = flag.String("max-memory", os.Getenv("YCOLLAB_MAX_MEMORY"), "cap on what the documents in memory may cost, as bytes or with a suffix (512MB, 4GiB); empty means unlimited. This is the bound to set against a container's memory limit - -max-rooms counts documents, which says nothing about their size")
 		maxConns     = flag.Int("max-conns", 0, "cap on concurrent connections to this node; 0 means unlimited")
 		shutdown     = flag.Duration("shutdown-timeout", 10*time.Second, "how long to wait for connections to drain")
 		logLevel     = flag.String("log-level", envOr("YCOLLAB_LOG_LEVEL", "info"), "debug, info, warn or error")
@@ -122,6 +123,10 @@ func run() error {
 	level, err := parseLevel(*logLevel)
 	if err != nil {
 		return err
+	}
+	memoryBudget, err := parseBytes(*maxMemory)
+	if err != nil {
+		return fmt.Errorf("-max-memory: %w", err)
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(log)
@@ -241,7 +246,8 @@ func run() error {
 	}
 
 	manager := room.NewManager(roomCtx, room.ManagerConfig{
-		MaxRooms: *maxRooms,
+		MaxRooms:  *maxRooms,
+		MaxMemory: memoryBudget,
 		Room: room.Config{
 			IdleTimeout:  *idleTimeout,
 			AwarenessTTL: *awarenessTTL,
@@ -264,12 +270,20 @@ func run() error {
 			Logger:          log,
 		},
 	})
+	if memoryBudget > 0 {
+		log.Info("bounding what the documents in memory may cost", "max_memory", memoryBudget)
+	} else if *maxRooms > 0 {
+		// Worth saying: a count of documents is not a bound on memory, and the
+		// person who set -max-rooms probably meant one.
+		log.Warn("-max-rooms bounds how many documents are held, not how much memory they use; set -max-memory to bound that")
+	}
 	if bus != nil {
 		log.Info("joined the cluster", "node_id", manager.NodeID(), "anti_entropy", *antiEntropy)
 	}
 	// The cluster counters are read from the room manager at scrape time rather
 	// than mirrored into a second set, so /metrics and /statsz cannot disagree.
 	registry.MustRegister(metrics.NewClusterCollector(manager.Stats()))
+	registry.MustRegister(metrics.NewResidentBytesCollector(manager.ResidentBytes, memoryBudget))
 
 	authorize, err := authorizer(*jwtSecret, auth.Config{
 		Leeway:        *jwtLeeway,

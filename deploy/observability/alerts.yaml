@@ -176,6 +176,21 @@ groups:
             p99 is over a second, and a client waits on it before its document
             loads. -auth-cache-ttl trades revocation latency for this.
 
+      # The budget is not a hard guarantee: a room somebody is connected to is
+      # never evicted. Sustained overshoot means every resident document is busy,
+      # and the next thing to happen is the out-of-memory killer.
+      - alert: YcollabOverMemoryBudget
+        expr: ycollab_max_memory_bytes > 0 and ycollab_rooms_resident_bytes > ycollab_max_memory_bytes
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab is holding more document memory than its budget"
+          description: >
+            {{ $labels.instance }} cannot evict its way back under -max-memory,
+            which means every resident document has somebody connected to it.
+            Raise the limit, spread the load, or route documents to replicas
+            consistently so each one holds fewer.
+
       - alert: YcollabDown
         expr: up{job=~"ycollab.*"} == 0
         for: 2m

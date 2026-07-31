@@ -62,15 +62,27 @@
       "fieldConfig": { "defaults": { "unit": "reqps" } }
     },
     {
+      "type": "timeseries",
+      "title": "Document memory",
+      "description": "Estimated heap cost of the documents in memory, the figure -max-memory is spent against. A floor: it does not model the allocator, so leave headroom against the container limit. Evictions by reason say whether the server has room: idle is healthy, budget and cap mean a bound was reached.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 9 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "ycollab_rooms_resident_bytes{job=\"$job\"}", "legendFormat": "{{instance}}" },
+        { "expr": "sum by (reason) (rate(ycollab_rooms_evicted_total{job=\"$job\"}[5m]))", "legendFormat": "evicted {{reason}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" } }
+    },
+    {
       "type": "row",
       "title": "Work",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
     },
     {
       "type": "timeseries",
       "title": "Time to integrate an update",
       "description": "CPU work on an in-memory structure. Healthy is microseconds; milliseconds means documents have grown or the process is starved.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -88,7 +100,7 @@
       "type": "timeseries",
       "title": "Fanout and backpressure",
       "description": "Frames dropped is not a performance number: every drop closes a client with 1008.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum(rate(ycollab_frames_sent_total{job=\"$job\"}[5m]))", "legendFormat": "sent" },
@@ -99,13 +111,13 @@
     {
       "type": "row",
       "title": "Storage",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
     },
     {
       "type": "timeseries",
       "title": "Database latency",
       "description": "A slow database becomes a stalled document: the room blocks once its write queue fills.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -119,7 +131,7 @@
       "type": "timeseries",
       "title": "Write failures, compactions and versions",
       "description": "A failed write means edits exist only in memory and in the clients that made them. Versions are the history: with -version-interval set, a flat line while people are editing means it is not working.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (op) (rate(ycollab_store_failed_total{job=\"$job\"}[5m]))", "legendFormat": "failed {{op}}" },
@@ -132,7 +144,7 @@
       "type": "timeseries",
       "title": "Compression",
       "description": "Snapshot and version bytes before and after deflate. Measured at about 2x on real documents; a ratio near 1 means the content is incompressible, which is what a CRDT update of a document full of ids looks like.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -145,13 +157,13 @@
     {
       "type": "row",
       "title": "Cluster",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
     },
     {
       "type": "timeseries",
       "title": "Bus traffic",
       "description": "self_filtered is our own messages coming back from Pub/Sub and being dropped: loop prevention working, not a fault. If published grows while nobody is typing, something is looping.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum(rate(ycollab_cluster_published_update_total{job=\"$job\"}[5m]))", "legendFormat": "published" },
@@ -164,7 +176,7 @@
       "type": "timeseries",
       "title": "Repairs and losses",
       "description": "Redis Pub/Sub is at-most-once. A trickle of repairs is the anti-entropy design working; a steady stream means the bus is losing messages.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum(rate(ycollab_cluster_answered_state_vector_total{job=\"$job\"}[5m]))", "legendFormat": "repairs sent" },
@@ -178,13 +190,13 @@
     {
       "type": "row",
       "title": "Refusals",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }
     },
     {
       "type": "timeseries",
       "title": "Refused, by reason",
       "description": "unauthorized is a bad or missing token; read_only is a viewer trying to edit; too_many_connections is the node at its cap.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (reason) (rate(ycollab_denied_total{job=\"$job\"}[5m]))", "legendFormat": "{{reason}}" }
@@ -195,7 +207,7 @@
       "type": "timeseries",
       "title": "Connections closed, by code",
       "description": "1001 is a shutdown, 1002 a protocol error, 1008 backpressure or a refused write, 1011 a document that could not be served.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (code) (rate(ycollab_connections_closed_total{job=\"$job\"}[5m]))", "legendFormat": "{{code}}" }
@@ -205,13 +217,13 @@
     {
       "type": "row",
       "title": "Webhooks",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 63 }
     },
     {
       "type": "timeseries",
       "title": "Deliveries",
       "description": "Events the receiver accepted, and events given up on after their retries. Dropped means the queue was full and the event is gone: whatever the webhook feeds is now missing edits.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 64 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (event) (rate(ycollab_hooks_sent_total{job=\"$job\"}[5m]))", "legendFormat": "sent {{event}}" },
@@ -224,7 +236,7 @@
       "type": "timeseries",
       "title": "Queue depth and delivery time",
       "description": "The queue is how far behind the receiver is. It is bounded, and events are dropped rather than allowed to slow a room down, so a queue sitting near its limit is a warning that drops are next.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 64 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum (ycollab_hook_queue_depth{job=\"$job\"})", "legendFormat": "queued" },
@@ -234,13 +246,13 @@
     {
       "type": "row",
       "title": "Authorization",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 63 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 72 }
     },
     {
       "type": "timeseries",
       "title": "Decisions, by result",
       "description": "Only populated with -auth-url. deny is the endpoint refusing somebody; error is the endpoint not answering, which under -auth-fail-open means nobody is being checked; misconfigured is the endpoint answering something this server cannot act on, which refuses everybody and never self-heals.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 64 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 73 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (result) (rate(ycollab_auth_requests_total{job=\"$job\"}[5m]))", "legendFormat": "{{result}}" },
@@ -252,7 +264,7 @@
       "type": "timeseries",
       "title": "Time to authorize",
       "description": "A client is holding an open socket for the length of this, before its document loads.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 64 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 73 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {

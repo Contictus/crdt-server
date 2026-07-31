@@ -49,6 +49,48 @@ writing each update before relaying it, at the cost of a database round trip per
 `-max-conns` and `-max-rooms` bound what one node will hold. Both default to unlimited, which
 is right for a laptop and wrong for anything reachable; the Kubernetes manifests set them.
 
+### Memory
+
+`-max-rooms` counts documents, which says nothing about their size: two thousand
+documents is forty megabytes or forty gigabytes depending on what is in them.
+`-max-memory` is the bound written in the same unit as a container's limit.
+
+```sh
+ycollab -max-memory 4GiB     # or 4GB, or 4096MB, or a plain number of bytes
+```
+
+Each room measures its own document — a walk of the struct store, costing single
+digit microseconds for a document of a realistic size — and re-measures only when
+it has changed. The total is `ycollab_rooms_resident_bytes`, and it is the figure
+to put next to the pod's limit on a dashboard.
+
+The estimate is arithmetic over the structures, not a constant: item headers come
+from `unsafe.Sizeof`, and what they point at is added separately. Measured
+against real heap growth it lands at **0.91–1.00x**. It is a floor by
+construction — it does not model size classes, map buckets or the collector — so
+leave headroom.
+
+**Two honest limits.**
+
+It is not a hard guarantee. A room with somebody connected to it is never
+evicted: the alternative is disconnecting the person who is typing to make room
+for somebody who has just arrived. Under sustained load with every document busy,
+the budget is exceeded and the server keeps serving. That is a bill rather than
+an outage, and the gauge shows it happening.
+
+**It does not lift the ceiling.** A replica serving a document holds all of it —
+sync step 2 needs the whole state and YATA integration needs the struct store, so
+there is no partial residency to be had. What changes is that the ceiling is
+stated, enforced, and visible before the out-of-memory killer finds it.
+
+Raising the ceiling is a deployment question rather than a code one: **route each
+document to one replica consistently**, and N replicas hold N times the documents
+instead of each holding whatever its clients happened to open. Any ingress that
+can hash on the URL path does it — with nginx, `hash $uri consistent`. Nothing in
+the server needs to change; documents already work from any replica, so a hash
+that is occasionally wrong costs a duplicate copy rather than a correctness
+problem.
+
 ### Limits
 
 Two things a connected client could otherwise do without permission, both bounded by default:

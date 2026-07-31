@@ -61,6 +61,10 @@ type Config struct {
 	// memory: the boundary is checked once, when the document is opened.
 	Owner string
 
+	// UsageInterval is how often the room re-measures its document. Zero uses
+	// DefaultUsageInterval.
+	UsageInterval time.Duration
+
 	// ServerClientID is the client id the room's Doc is created with. The
 	// server never authors content, so this only matters if a later phase makes
 	// it edit documents itself.
@@ -198,6 +202,9 @@ type Room struct {
 	aw    *protocol.Awareness
 	docID store.UUID
 	owner store.UUID
+	// usage is what the document costs, measured on the tick and published for
+	// the manager's memory budget. See memory.go.
+	usage usage
 
 	// jobs carries work to the persist goroutine; nil when there is no store.
 	// Only the room goroutine touches it.
@@ -591,6 +598,7 @@ func (r *Room) update(conn Conn, update []byte) {
 		return
 	}
 	started := time.Now()
+	r.touchDocument()
 	err := r.doc.ApplyUpdate(update)
 	metrics.Observe(r.metrics.ApplyDuration, started)
 	r.metrics.UpdateBytes.Observe(float64(len(update)))
@@ -659,6 +667,11 @@ func (r *Room) awareness(conn Conn, payload []byte) {
 // tick sweeps stale awareness states and evicts the room if it has been empty
 // long enough. It reports whether the room evicted itself.
 func (r *Room) tick(now time.Time) bool {
+	// Before the idle check, so a room that is about to evict itself has still
+	// reported what it weighed - otherwise the gauge would drift down only when
+	// rooms happened to be measured.
+	r.measure(now)
+
 	if _, payload, err := r.aw.Sweep(now, r.cfg.AwarenessTTL); err != nil {
 		r.log.Error("sweep awareness", "err", err)
 	} else if payload != nil {
@@ -677,13 +690,17 @@ func (r *Room) tick(now time.Time) bool {
 	if now.Sub(r.lastEmpty) < r.cfg.IdleTimeout {
 		return false
 	}
+	// The ordinary case: nobody has been here for -idle-timeout. Counted apart
+	// from the two that mean a bound was reached, because a server evicting on
+	// idleness has headroom and one evicting on a bound does not.
+	r.metrics.RoomsEvicted.WithLabelValues("idle").Inc()
 	r.evict()
 	return true
 }
 
 // evict writes the document out and shuts the room down.
 func (r *Room) evict() {
-	r.log.Info("evicting room")
+	r.log.Info("evicting room", "bytes", r.Bytes(), "structs", r.Structs())
 	if r.cfg.OnEvict != nil {
 		r.cfg.OnEvict(r.cfg.Name, r.doc)
 	}
