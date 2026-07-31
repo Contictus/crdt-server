@@ -296,7 +296,7 @@ func TestTextFrameIsRejected(t *testing.T) {
 // because that is where the client reads it (y-websocket.js:84-92).
 func TestAuthorizeRejectsWithPermissionDenied(t *testing.T) {
 	srv := newServer(t, gateway.Config{
-		Authorize: func(r *http.Request, _ string) (gateway.Grant, error) {
+		Authorize: func(r *http.Request, _, _ string) (gateway.Grant, error) {
 			if r.URL.Query().Get("token") == "good" {
 				return gateway.Grant{Write: true}, nil
 			}
@@ -331,7 +331,7 @@ func TestAuthorizeRejectsWithPermissionDenied(t *testing.T) {
 func TestAuthorizeSeesTheDocumentName(t *testing.T) {
 	seen := make(chan string, 1)
 	srv := newServer(t, gateway.Config{
-		Authorize: func(_ *http.Request, doc string) (gateway.Grant, error) {
+		Authorize: func(_ *http.Request, doc, _ string) (gateway.Grant, error) {
 			seen <- doc
 			return gateway.Grant{Write: true}, nil
 		},
@@ -352,7 +352,7 @@ func TestAuthorizeSeesTheDocumentName(t *testing.T) {
 // reason the write pump drains its queue before sending the close frame.
 func TestAReadOnlyConnectionIsRefusedWhenItWrites(t *testing.T) {
 	srv := newServer(t, gateway.Config{
-		Authorize: func(r *http.Request, _ string) (gateway.Grant, error) {
+		Authorize: func(r *http.Request, _, _ string) (gateway.Grant, error) {
 			return gateway.Grant{Write: r.URL.Query().Get("perm") == "write"}, nil
 		},
 	})

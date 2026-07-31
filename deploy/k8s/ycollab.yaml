@@ -108,6 +108,19 @@ spec:
               valueFrom: { secretKeyRef: { name: ycollab, key: redis-url } }
             - name: YCOLLAB_JWT_SECRET
               valueFrom: { secretKeyRef: { name: ycollab, key: jwt-secret } }
+            # The alternative to the token above: let the application decide per
+            # connection instead of minting a capability per document. Set one or
+            # the other - the server refuses to start with both, because that
+            # would mean picking a winner when they disagree.
+            #
+            #   - name: YCOLLAB_AUTH_URL
+            #     value: "http://your-app.default.svc.cluster.local/ycollab/authorize"
+            #   - name: YCOLLAB_AUTH_SECRET
+            #     valueFrom: { secretKeyRef: { name: ycollab, key: auth-secret } }
+            #
+            # Add -auth-fail-open to the args only as a deliberate choice: it
+            # keeps documents served while that endpoint is down, which means
+            # anybody who can reach this Service may read and write any of them.
             # The admin listener serves POST and DELETE on every document, so
             # the Service below not naming the port is the first control and
             # this is the second. Prometheus needs it too: give the scrape job

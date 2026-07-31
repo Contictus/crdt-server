@@ -216,6 +216,41 @@
         { "expr": "sum (ycollab_hook_queue_depth{job=\"$job\"})", "legendFormat": "queued" },
         { "expr": "histogram_quantile(0.99, sum by (le) (rate(ycollab_hook_duration_seconds_bucket{job=\"$job\"}[5m])))", "legendFormat": "p99 seconds" }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Authorization",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Decisions, by result",
+      "description": "Only populated with -auth-url. deny is the endpoint refusing somebody; error is the endpoint not answering, which under -auth-fail-open means nobody is being checked; misconfigured is the endpoint answering something this server cannot act on, which refuses everybody and never self-heals.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (result) (rate(ycollab_auth_requests_total{job=\"$job\"}[5m]))", "legendFormat": "{{result}}" },
+        { "expr": "sum by (result) (rate(ycollab_auth_cache_total{job=\"$job\"}[5m]))", "legendFormat": "cache {{result}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time to authorize",
+      "description": "A client is holding an open socket for the length of this, before its document loads.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(ycollab_auth_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ycollab_auth_duration_seconds_bucket{job=\"$job\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
     }
   ]
 }

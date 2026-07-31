@@ -133,6 +133,49 @@ groups:
             edits are not reaching the other replicas; they will be repaired by
             anti-entropy only if the connection comes back.
 
+      # With -auth-url, every connection waits on this endpoint. Errors mean
+      # people are being refused for a reason that is not about them - or, under
+      # -auth-fail-open, that nobody is being checked at all.
+      - alert: YcollabAuthEndpointFailing
+        expr: rate(ycollab_auth_requests_total{result="error"}[5m]) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "ycollab cannot reach its authorization endpoint"
+          description: >
+            {{ $labels.instance }} is not getting answers from -auth-url.
+            Connections are being refused, unless -auth-fail-open is set, in
+            which case every client may read and write every document until this
+            clears.
+
+      # A different failure with a different fix: the endpoint is up and
+      # answering something the server cannot act on. These connections are
+      # refused whatever -auth-fail-open says, so this never self-heals.
+      - alert: YcollabAuthEndpointMisconfigured
+        expr: rate(ycollab_auth_requests_total{result="misconfigured"}[5m]) > 0
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "ycollab's authorization endpoint is answering something unusable"
+          description: >
+            The endpoint returned a status or body this server cannot read - a
+            404 from the wrong path, a redirect, or a 200 without an "allow"
+            field. Every connection is being refused and will keep being refused
+            until the endpoint or -auth-url is fixed.
+
+      # The client is holding an open socket while this runs.
+      - alert: YcollabAuthEndpointSlow
+        expr: >
+          histogram_quantile(0.99,
+            sum by (le) (rate(ycollab_auth_duration_seconds_bucket[5m]))) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab's authorization endpoint is slow"
+          description: >
+            p99 is over a second, and a client waits on it before its document
+            loads. -auth-cache-ttl trades revocation latency for this.
+
       - alert: YcollabDown
         expr: up{job=~"ycollab.*"} == 0
         for: 2m

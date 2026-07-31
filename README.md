@@ -271,6 +271,10 @@ it just received it. The server deliberately does not infer "and its subdocument
 token: it would have to load the parent on every connection to check, and a token whose scope
 grows as the document changes is not a scope anybody can reason about.
 
+If minting one token per guid is the wrong shape for your application, `-auth-url` is the other
+answer: the server asks about each guid as it is opened, and the application decides then, with
+no token to mint. See [Asking your application instead](#asking-your-application-instead).
+
 ### Version history
 
 `-version-interval 1h` keeps a copy of each document as it changes, so there is an answer to
@@ -428,6 +432,57 @@ go run ./cmd/ycollab-token -doc demo -perm read -url ws://127.0.0.1:8080   # a f
 ```
 
 `-jwt-secret a,b` accepts both keys at once, which is how a key is rotated without an outage.
+
+### Asking your application instead
+
+A token is a capability: the application decides once, at the moment it mints one. That is the
+wrong shape when the application already has a session and no token endpoint, when permissions
+change while a document is open, or when subdocuments are in play — Yjs opens a provider per
+guid, and those guids are names the application only learns about when Yjs tells it.
+
+`-auth-url` moves the decision to the application. The server POSTs one JSON body per
+connection, before the WebSocket upgrade:
+
+```json
+{ "document": "notes", "token": "session=abc", "ip": "203.0.113.7", "origin": "https://app.example.com" }
+```
+
+and expects:
+
+```json
+{ "allow": true, "write": true, "subject": "user_42" }
+```
+
+`allow` is required — an answer without it is refused, whatever else it says. `write` false
+grants a read-only connection, the same one a `read` token gets. `subject` is for logging.
+`reason` on a refusal is written to the client in the permission-denied frame, so it is the
+place to say "your trial ended" rather than leaving somebody staring at a closed socket. A
+refusal may also be a plain `401` or `403`.
+
+The token is forwarded verbatim and is never inspected here: it is a session cookie value, an
+opaque id, your own JWT, or empty. `-jwt-secret` and `-auth-url` are alternatives, and setting
+both is a startup error — running them together would mean picking a winner when they disagree,
+and an endpoint that wants JWTs can verify them itself.
+
+**Sign the requests.** With `-auth-secret` set, every request carries
+`X-Ycollab-Signature: t=<unix>,v1=<hex hmac-sha256 of "<t>.<body>">`, the same scheme the
+webhook uses. Without it, your authorisation endpoint answers "does this token work" to anybody
+who can reach it.
+
+**When the endpoint is down**, connections are refused. `-auth-fail-open` inverts that and lets
+everybody read and write for the duration of the outage; it is off by default because not
+knowing who somebody is, is a worse reason to serve a document than to withhold it. Fail-open
+covers an endpoint that is *down* — a timeout, a refused connection, a 5xx. An endpoint that is
+up and answering a `404`, a redirect, or a 200 this server cannot read is a misconfiguration,
+and those connections are refused whatever `-auth-fail-open` says: otherwise a typo in the URL
+is an open server.
+
+**Cost.** One request per connection, on the path a client is waiting on — watch
+`ycollab_auth_duration_seconds`. Identical questions arriving at once (the reconnect storm after
+a deploy) collapse into a single request. `-auth-cache-ttl` additionally reuses a decision for
+the same token and document; it is `0` by default, because a remembered decision is a revocation
+that has not taken effect yet. An endpoint may return `"ttl": <seconds>` to be re-asked sooner
+than that, but never later.
 
 ### The demo
 

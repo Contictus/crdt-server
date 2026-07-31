@@ -1128,6 +1128,80 @@ is missing a few updates and looks identical to a good one is the worst version
 of this. The count now travels back on the snapshot, the handler logs it, and
 the JSON view carries `skipped`.
 
+### D106. The token path and the callback path are alternatives, not layers
+`-jwt-secret` and `-auth-url` cannot both be set; the server refuses to start.
+
+The tempting design is to layer them: verify the JWT here, and ask the endpoint
+about the ones that pass. It reads like defence in depth and is not. The main
+reason to want a callback is "this user lost access" — and a callback that is
+only consulted about tokens this server already accepted cannot express that,
+because the expired or revoked ones never reach it. Layering would also mean
+answering "which one wins when they disagree", and every answer to that surprises
+somebody at three in the morning.
+
+Rejected alternative: make `-auth-url` a fallback consulted only when there is no
+token. That is the same problem wearing a hat — it makes the *client* choose
+which authority applies, by deciding whether to send a token.
+
+The endpoint gets the token verbatim, so an application that wants JWTs verifies
+them itself and keeps the revocation check. Nothing is lost.
+
+### D107. Fail-open covers an outage, not a misconfiguration
+`-auth-fail-open` lets everybody in while the authorisation endpoint is
+unreachable. It deliberately does **not** apply when the endpoint answers a 404, a
+redirect, a 204, or a 200 whose body has no `allow` field: those are refused
+regardless.
+
+The reason is what each failure means. A timeout or a 5xx is "the service is
+down", which is an outage the operator chose to trade for availability. A 404 is
+"you typed the URL wrong", and a 200 without `allow` is "your endpoint is not the
+one this server was built to talk to". Under the naive reading — anything that is
+not a clear yes goes through the fail-open switch — a typo in `-auth-url` produces
+a server that lets the entire internet read and write every document while logging
+a warning nobody is watching. The first deploy is exactly when that typo exists.
+
+This is also why `allow` is decoded into a `*bool`. An absent field has to be
+distinguishable from `false`; treating absent as either is a guess, and the guess
+is wrong in a direction somebody finds out about later.
+
+### D108. The authorisation cache is off by default, and the single flight is not
+Two mechanisms, and only one of them is a default, because they trade different
+things.
+
+The single flight — identical questions in the air at once collapse into one
+request — costs nothing. It changes no answer; it only stops fifty clients
+reconnecting after a deploy from becoming fifty simultaneous requests to the
+slowest thing in the connection path. Always on.
+
+The cache does change answers: a remembered decision is a revocation that has not
+taken effect yet. That is a real tradeoff and it is the operator's, so
+`-auth-cache-ttl` defaults to `0`. An endpoint may return a *shorter* `ttl` to be
+re-asked sooner; a longer one is capped, because how much staleness a deployment
+tolerates is not the endpoint's call.
+
+Rejected alternative: an LRU. Eviction here is a sweep of what expired and, only
+if that frees nothing, a wholesale clear. The cache is a stampede guard with a
+lifetime in seconds, not a hit-rate optimisation, and an LRU's bookkeeping would
+sit on the connection path to protect a number nobody is tuning.
+
+Three things are never remembered: a fail-open grant (the point is to leave that
+state the moment the endpoint returns), a refusal caused by an outage (it is not a
+decision about the token), and a client that walked away mid-question. The first
+of those was a bug the test found — the comment said "not cached" and the code
+cached it — which is why "may this be remembered" is now a field on the answer
+rather than something the caller infers from a nil error.
+
+### D109. One HMAC scheme, in one package
+`internal/signature` was extracted from `internal/hook` when the authorisation
+callback needed to sign its requests too. `hook.Sign` and `hook.Verify` remain as
+one-line wrappers, because they are the names a webhook receiver is written
+against and the README documents them.
+
+The alternative was for `internal/auth` to import `internal/hook`, which puts a
+webhook dependency in the authorisation path for the sake of eight lines of HMAC,
+or to write those eight lines twice. Two implementations of a signing format are
+two implementations that can drift, and the receiver only ever writes one verifier.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

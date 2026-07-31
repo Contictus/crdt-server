@@ -74,6 +74,13 @@ func run() error {
 		jwtMaxLifetime   = flag.Duration("jwt-max-lifetime", 0, "reject tokens valid for longer than this; 0 accepts any expiry")
 		jwtRequireExpiry = flag.Bool("jwt-require-expiry", true, "reject tokens that never expire")
 
+		authURL       = flag.String("auth-url", os.Getenv("YCOLLAB_AUTH_URL"), "ask this URL whether each connection may open its document, instead of verifying a token here. Cannot be combined with -jwt-secret")
+		authSecret    = flag.String("auth-secret", os.Getenv("YCOLLAB_AUTH_SECRET"), "HMAC-SHA256 key the authorization request body is signed with; empty leaves the requests unsigned")
+		authTimeout   = flag.Duration("auth-timeout", auth.DefaultCallbackTimeout, "how long one authorization request may take; a client is waiting on it")
+		authCacheTTL  = flag.Duration("auth-cache-ttl", 0, "reuse an authorization decision for the same token and document for this long; 0 asks every time, so a revocation takes effect at once")
+		authCacheSize = flag.Int("auth-cache-size", auth.DefaultCacheSize, "how many authorization decisions may be remembered at once")
+		authFailOpen  = flag.Bool("auth-fail-open", false, "allow every connection while the authorization endpoint is unreachable, instead of refusing them")
+
 		awarenessMaxState   = flag.Int("awareness-max-state", protocol.DefaultMaxState, "largest cursor state a client may publish, in bytes; negative means no limit")
 		awarenessMaxClients = flag.Int("awareness-max-clients", protocol.DefaultMaxClients, "how many clients one document will track cursors for; negative means no limit")
 
@@ -233,6 +240,15 @@ func run() error {
 		Leeway:        *jwtLeeway,
 		MaxLifetime:   *jwtMaxLifetime,
 		RequireExpiry: *jwtRequireExpiry,
+	}, auth.CallbackConfig{
+		URL:       *authURL,
+		Secret:    []byte(*authSecret),
+		Timeout:   *authTimeout,
+		CacheTTL:  *authCacheTTL,
+		CacheSize: *authCacheSize,
+		FailOpen:  *authFailOpen,
+		Metrics:   collectors,
+		Logger:    log,
 	}, log)
 	if err != nil {
 		return err
@@ -328,14 +344,44 @@ func run() error {
 }
 
 // authorizer builds the gateway's authorisation hook from the configured
-// secrets, or returns nil when there are none.
+// secrets or callback URL, or returns nil when there is neither.
 //
 // Nil means open, and the server says so loudly at startup. That is the right
 // default for a server you are running on your laptop to try the demo, and the
 // wrong one everywhere else, which is why it is a warning rather than silence.
-func authorizer(secrets string, cfg auth.Config, log *slog.Logger) (func(*http.Request, string) (gateway.Grant, error), error) {
+func authorizer(secrets string, cfg auth.Config, cb auth.CallbackConfig, log *slog.Logger) (func(*http.Request, string, string) (gateway.Grant, error), error) {
+	// The two are alternatives, not layers. Running both would mean deciding
+	// which one wins when they disagree, and every answer to that is a surprise
+	// to somebody: a callback that is asked only about tokens this server
+	// already accepted cannot implement "this user lost access", which is the
+	// main reason to want one. An endpoint that wants JWTs can verify them
+	// itself - it gets the token verbatim.
+	if secrets != "" && cb.URL != "" {
+		return nil, errors.New("-jwt-secret and -auth-url are alternatives: pick the one that decides, and let it decide")
+	}
+
+	if cb.URL != "" {
+		callback, err := auth.NewCallback(cb)
+		if err != nil {
+			return nil, err
+		}
+		log.Info("asking an endpoint about every connection", "cache_ttl", cb.CacheTTL, "fail_open", cb.FailOpen)
+		return func(r *http.Request, doc, ip string) (gateway.Grant, error) {
+			grant, err := callback.Authorize(r.Context(), auth.Request{
+				Document: doc,
+				Token:    auth.TokenFromRequest(r),
+				IP:       ip,
+				Origin:   auth.OriginFromRequest(r),
+			})
+			if err != nil {
+				return gateway.Grant{}, err
+			}
+			return gateway.Grant{Subject: grant.Subject, Write: grant.Write}, nil
+		}, nil
+	}
+
 	if secrets == "" {
-		log.Warn("no -jwt-secret: every client may read and write every document")
+		log.Warn("no -jwt-secret and no -auth-url: every client may read and write every document")
 		return nil, nil
 	}
 	for _, s := range splitList(secrets) {
@@ -347,7 +393,7 @@ func authorizer(secrets string, cfg auth.Config, log *slog.Logger) (func(*http.R
 	}
 	log.Info("requiring signed tokens", "keys", len(cfg.Secrets), "require_expiry", cfg.RequireExpiry)
 
-	return func(r *http.Request, doc string) (gateway.Grant, error) {
+	return func(r *http.Request, doc, _ string) (gateway.Grant, error) {
 		grant, err := verifier.Verify(auth.TokenFromRequest(r), doc)
 		if err != nil {
 			// The error text goes to the client. auth's errors are written to be

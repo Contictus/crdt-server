@@ -95,7 +95,13 @@ type Config struct {
 	//
 	// Nil means every connection is allowed to read and write, which is what a
 	// server started without a signing secret does.
-	Authorize func(r *http.Request, doc string) (Grant, error)
+	//
+	// ip is the client address as this handler resolved it, honouring Proxies.
+	// It is passed rather than left to be re-derived from the request, so that
+	// what an external authorization endpoint is told about the client is the
+	// same address this server rate-limits and logs. Two answers to "who is
+	// this" is one too many.
+	Authorize func(r *http.Request, doc, ip string) (Grant, error)
 }
 
 // A Grant is what Authorize decided.
@@ -215,7 +221,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	grant := Grant{Write: true}
 	var authErr error
 	if h.cfg.Authorize != nil {
-		grant, authErr = h.cfg.Authorize(r, name)
+		grant, authErr = h.cfg.Authorize(r, name, ip)
 	}
 
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{

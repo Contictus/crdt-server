@@ -26,6 +26,8 @@ resync, not a data loss, as long as the clients are still there.
 | Postgres is down | high | edits live only in memory and in the clients; a restart now loses them |
 | `ycollab_frames_dropped_total` climbing | medium | clients are being disconnected to protect documents |
 | Documents readable but wrong | stop and read "A document is wrong" below | do **not** restart; memory may hold the only good copy |
+| `-auth-url` endpoint down, `-auth-fail-open` off | high | nobody can open a document |
+| `-auth-url` endpoint down, `-auth-fail-open` on | high | everybody can open every document |
 
 ## Alerts
 
@@ -151,6 +153,53 @@ after their retries. Whatever the webhook feeds is missing edits.
    too slowly. Raise `-webhook-queue` or make the receiver faster.
 3. The events are gone and nothing will retry them. To catch up, read the
    documents directly: `GET /documents/{name}`.
+
+### YcollabAuthEndpointFailing
+
+Only fires with `-auth-url`. The endpoint your application serves is not
+answering, and every connection waits on it.
+
+1. **First establish which way the server is failing**, because the two are
+   opposite emergencies. `ycollab_auth_requests_total{result="error"}` climbing
+   with `ycollab_connections_total` flat means connections are being refused —
+   an outage, users locked out. The same counter climbing while connections keep
+   being accepted means `-auth-fail-open` is set and **every client may currently
+   read and write every document**. Check the flag on the running process before
+   anything else.
+2. Is the endpoint up at all? From a replica:
+   `curl -sv -X POST -d '{}' <the -auth-url>`. A connection refused or a hang is
+   the endpoint; a 404 is the next alert down, not this one.
+3. `ycollab_auth_duration_seconds` p99 near `-auth-timeout` (default 3 s) means
+   it is answering, too slowly, and each answer arrives after the server has
+   given up.
+4. If this will take a while to fix and users are locked out, `-auth-cache-ttl`
+   does **not** help — it never had an answer to remember. The options are fixing
+   the endpoint, or restarting with `-auth-fail-open` as a deliberate,
+   time-boxed decision that documents are readable by anyone who can reach the
+   server.
+
+### YcollabAuthEndpointMisconfigured
+
+The endpoint is reachable and answering something this server cannot act on: a
+404 from the wrong path, a redirect, a 204, or a 200 whose body has no `allow`
+field. Every connection is refused, and — unlike the alert above — this is
+refused whatever `-auth-fail-open` says, so it will not clear on its own.
+
+1. Almost always a wrong `-auth-url` or an endpoint that was redeployed behind a
+   new path. Compare the flag on the running process against the route the
+   application actually serves.
+2. Reproduce with the body the server sends:
+
+   ```sh
+   curl -si -X POST -H 'Content-Type: application/json' \
+     -d '{"document":"notes","token":"","ip":"127.0.0.1"}' <the -auth-url>
+   ```
+
+   A correct endpoint answers `200` with `{"allow":true|false, ...}`. A `301`
+   here is the usual cause: the server does not follow redirects for this.
+3. If the body is right but the server still refuses, check for `"allow"`
+   specifically. `{"write":true}` is not an answer — the field is required, and
+   its absence is deliberately not read as either yes or no.
 
 ## Common tasks
 

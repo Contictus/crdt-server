@@ -63,6 +63,14 @@ type Metrics struct {
 	HookAttempts prometheus.Counter
 	HookDuration prometheus.Histogram
 	HookQueue    prometheus.Gauge
+
+	// Auth is the external authorization callback. The result label separates
+	// the three things an operator has to tell apart: the endpoint refusing
+	// somebody, the endpoint being unreachable, and the endpoint answering
+	// something this server cannot act on.
+	AuthRequests *prometheus.CounterVec
+	AuthCache    *prometheus.CounterVec
+	AuthDuration prometheus.Histogram
 }
 
 // New registers a set of collectors and returns them.
@@ -193,6 +201,20 @@ func New(reg prometheus.Registerer) *Metrics {
 		HookQueue: factory.gauge(prometheus.GaugeOpts{
 			Name: "ycollab_hook_queue_depth",
 			Help: "Webhook events waiting to be delivered.",
+		}),
+
+		AuthRequests: factory.counterVec(prometheus.CounterOpts{
+			Name: "ycollab_auth_requests_total",
+			Help: "Calls to the authorization endpoint, by result: allow, deny, error or misconfigured.",
+		}, []string{"result"}),
+		AuthCache: factory.counterVec(prometheus.CounterOpts{
+			Name: "ycollab_auth_cache_total",
+			Help: "Authorization decisions answered from the cache or not, by result: hit or miss.",
+		}, []string{"result"}),
+		AuthDuration: factory.histogram(prometheus.HistogramOpts{
+			Name:    "ycollab_auth_duration_seconds",
+			Help:    "Time for one call to the authorization endpoint. A client is waiting on this.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 3, 10),
 		}),
 	}
 }
