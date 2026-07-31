@@ -169,3 +169,30 @@ func BenchmarkUsage(b *testing.B) {
 		})
 	}
 }
+
+// Usage type-switches over every content type and walks whatever the store
+// holds, so it is reachable from any bytes a client can send. A panic in an
+// accounting routine would take down the room it was measuring, and the memory
+// budget calls it on a timer for every resident document.
+func FuzzUsageNeverPanics(f *testing.F) {
+	for _, dir := range []string{"text-insert-single", "map-nested-type", "gc-and-skip", "content-doc", "xml-prosemirror"} {
+		if b, err := os.ReadFile(filepath.Join("../../testdata/fixtures", dir, "state.bin")); err == nil {
+			f.Add(b)
+		}
+	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		d := crdt.NewDoc(1)
+		// An update that will not apply still leaves pending state behind, which
+		// Usage also walks - so the error is not a reason to stop.
+		_ = d.ApplyUpdate(b)
+		u := d.Usage()
+		if u.Bytes < 0 || u.Structs < 0 || u.Clients < 0 || u.Pending < 0 {
+			t.Fatalf("negative usage %+v from %x", u, b)
+		}
+		// Twice, because the room measures repeatedly and a walk that mutated
+		// what it walked would show up here rather than in production.
+		if again := d.Usage(); again != u {
+			t.Fatalf("measuring changed the answer: %+v then %+v", u, again)
+		}
+	})
+}

@@ -539,6 +539,11 @@ without downloading anything:
 }
 ```
 
+`bytes` on a listing is the **stored** size — what the version costs, after
+compression — so it is smaller than the document it holds. Fetching the version
+returns the document itself, at its full size. If you are sizing a download,
+`state_vector` is the better thing to compare; if you are sizing a bill, this is.
+
 **Restoring is two steps, on purpose:**
 
 ```bash

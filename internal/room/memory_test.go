@@ -10,6 +10,7 @@ package room
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -228,5 +229,44 @@ func TestAnUnchangedDocumentIsNotRemeasured(t *testing.T) {
 	r.measure(first.Add(2 * time.Hour))
 	if r.usage.measured.Equal(first) {
 		t.Error("a changed document was never re-measured")
+	}
+}
+
+// The budget starts a sweep goroutine, and a manager that has stopped must not
+// leave it running. Every other goroutine in this package is waited on by
+// Manager.Wait; this one is not, so it is worth checking that cancelling the
+// context is enough.
+func TestTheBudgetSweepStopsWithTheManager(t *testing.T) {
+	before := runtime.NumGoroutine()
+
+	for range 20 {
+		ctx, cancel := context.WithCancel(context.Background())
+		m := NewManager(ctx, ManagerConfig{
+			MaxMemory: 1 << 20,
+			Room:      Config{IdleTimeout: time.Hour, UsageInterval: time.Millisecond, Now: time.Now},
+		})
+		if _, err := m.Join("doc", &fakeConn{id: 1}, ""); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		m.Wait()
+	}
+
+	// The sweeps exit on their own once the context is cancelled, which may not
+	// have happened by the time Wait returns - so this waits rather than
+	// asserting immediately.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		runtime.GC()
+		after := runtime.NumGoroutine()
+		if after <= before+2 {
+			return
+		}
+		if time.Now().After(deadline) {
+			buf := make([]byte, 1<<16)
+			t.Fatalf("%d goroutines before, %d after 20 managers stopped\n%s",
+				before, after, buf[:runtime.Stack(buf, true)])
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
