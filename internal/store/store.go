@@ -53,6 +53,23 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
+// Ensure creates the document row if it is not there, so that a caller which
+// writes to the log without reading the document first does not trip the
+// foreign key.
+//
+// Restoring into a document that was just deleted, or into a database that has
+// never heard of it, is exactly that case - and it is the disaster-recovery
+// path, so it has to work without a read first.
+func (s *Store) Ensure(ctx context.Context, id UUID) error {
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO documents (id, owner_id) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
+		id, NilUUID,
+	); err != nil {
+		return fmt.Errorf("store: ensure document: %w", err)
+	}
+	return nil
+}
+
 // A Document is what was on disk: a snapshot, possibly empty, and the log rows
 // that came after it.
 type Document struct {

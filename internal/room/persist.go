@@ -14,8 +14,21 @@ import (
 // real thing.
 type Persistence interface {
 	Load(ctx context.Context, id store.UUID) (*store.Document, error)
+	// Ensure creates the document row. Only Import needs it - Load creates the
+	// row as a side effect of reading - but a restore writes to the log
+	// without reading first, and the log's foreign key wants a parent.
+	Ensure(ctx context.Context, id store.UUID) error
 	Append(ctx context.Context, id store.UUID, payloads [][]byte) ([]int64, error)
 	Compact(ctx context.Context, id store.UUID, snapshot []byte, folded []int64) error
+}
+
+// Versioning is the part of internal/store a room needs to keep history. It is
+// separate from Persistence because a room can persist without versioning, and
+// because every test that only cares about writes should not have to implement
+// three more methods.
+type Versioning interface {
+	SaveVersion(ctx context.Context, id store.UUID, v store.Version, minAge time.Duration) (bool, error)
+	PruneVersions(ctx context.Context, id store.UUID, keep int) (int64, error)
 }
 
 const (
@@ -39,6 +52,10 @@ type persistJob struct {
 	payload []byte
 	// snapshot is the full document state to write, when this is a compaction.
 	snapshot []byte
+	// version, when set, is a version to record. It goes through this queue
+	// like everything else so the room goroutine never waits for a database
+	// call, and so writes for one document stay in order.
+	version *versionJob
 	// done, when set, is closed once this job has been written. It is what
 	// makes durable writes durable: the room waits on it before relaying the
 	// update, so a client is never told about an edit that is not on disk.
@@ -199,6 +216,13 @@ func (r *Room) persist(jobs <-chan persistJob) {
 			if !ok {
 				flush()
 				return
+			}
+			if job.version != nil {
+				// Before the flush, deliberately: a version is a statement
+				// about the document as the room had it when it asked, and
+				// the payload already in hand says exactly that.
+				r.saveVersion(*job.version)
+				continue
 			}
 			if job.snapshot != nil {
 				// Everything queued before the snapshot request has to be on

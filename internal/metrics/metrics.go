@@ -49,6 +49,10 @@ type Metrics struct {
 	StoreFailed   *prometheus.CounterVec
 	Compactions   prometheus.Counter
 	LoadDuration  prometheus.Histogram
+	// Versions counts history rows written. A document being edited produces
+	// one an interval; a flat line while people are editing means versioning
+	// is off or failing.
+	Versions prometheus.Counter
 
 	// Hooks are the webhook deliveries. Dropped is the one to watch: it means
 	// the receiver was slow enough that events were thrown away rather than
@@ -154,6 +158,10 @@ func New(reg prometheus.Registerer) *Metrics {
 		Compactions: factory.counter(prometheus.CounterOpts{
 			Name: "ycollab_compactions_total",
 			Help: "Update logs folded into a snapshot.",
+		}),
+		Versions: factory.counter(prometheus.CounterOpts{
+			Name: "ycollab_versions_total",
+			Help: "Document versions written to the history.",
 		}),
 		LoadDuration: factory.histogram(prometheus.HistogramOpts{
 			Name:    "ycollab_document_load_seconds",

@@ -28,6 +28,8 @@ type fakeStore struct {
 	appendErr error
 }
 
+func (f *fakeStore) Ensure(context.Context, store.UUID) error { return f.loadErr }
+
 func (f *fakeStore) Load(context.Context, store.UUID) (*store.Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -61,6 +61,9 @@ func run() error {
 		durableWrites = flag.Bool("durable-writes", false, "write every update to the database before relaying it; removes the flush window at the cost of a round trip per update")
 		retention     = flag.Duration("retention", 0, "delete documents nothing has touched for this long; 0 keeps them forever")
 
+		versionInterval = flag.Duration("version-interval", 0, "keep a version of each changed document this often; 0 keeps only the versions asked for through the API")
+		versionKeep     = flag.Int("version-keep", room.DefaultVersionKeep, "versions to keep per document; negative keeps every one, which is unbounded storage")
+
 		redisURL    = flag.String("redis-url", os.Getenv("YCOLLAB_REDIS_URL"), "Redis connection string for cross-replica fanout; empty makes this a single node")
 		redisPrefix = flag.String("redis-prefix", envOr("YCOLLAB_REDIS_PREFIX", cluster.DefaultPrefix), "namespace for the Redis channel names")
 		antiEntropy = flag.Duration("anti-entropy", room.DefaultAntiEntropy, "how often a room announces its state vector to the other replicas")
@@ -120,6 +123,7 @@ func run() error {
 	defer stopRooms()
 
 	var persistence room.Persistence
+	var versioning room.Versioning
 	var documents *store.Store
 	if *databaseURL != "" {
 		db, err := store.Open(context.Background(), *databaseURL)
@@ -132,7 +136,11 @@ func run() error {
 		}
 		persistence = db
 		documents = db
+		versioning = db
 		log.Info("persisting documents", "compact_after", *compactAfter)
+		if *versionInterval > 0 {
+			log.Info("keeping version history", "every", *versionInterval, "keep", *versionKeep)
+		}
 	} else {
 		// Worth saying out loud: without a database this process is the only
 		// copy of every document it is serving.
@@ -199,16 +207,19 @@ func run() error {
 				MaxState:   *awarenessMaxState,
 				MaxClients: *awarenessMaxClients,
 			},
-			Tick:          *tick,
-			Store:         persistence,
-			CompactAfter:  *compactAfter,
-			FlushInterval: flushSetting(*flushInterval, *durableWrites),
-			Bus:           bus,
-			AntiEntropy:   *antiEntropy,
-			Hooks:         hooks,
-			HookState:     *webhookState,
-			Metrics:       collectors,
-			Logger:        log,
+			Tick:            *tick,
+			Store:           persistence,
+			CompactAfter:    *compactAfter,
+			FlushInterval:   flushSetting(*flushInterval, *durableWrites),
+			Versions:        versioning,
+			VersionInterval: *versionInterval,
+			VersionKeep:     *versionKeep,
+			Bus:             bus,
+			AntiEntropy:     *antiEntropy,
+			Hooks:           hooks,
+			HookState:       *webhookState,
+			Metrics:         collectors,
+			Logger:          log,
 		},
 	})
 	if bus != nil {

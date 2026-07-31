@@ -54,6 +54,7 @@ func (r *Room) merge(c mergeCmd) {
 	}
 	r.record(c.update)
 	r.changed()
+	r.versionDirty = true
 	// The clients holding this document have to be told, or the next thing they
 	// send will be built on a version of the document that no longer matches
 	// the server's. Every connection gets it, because none of them sent it.
@@ -87,7 +88,14 @@ func Import(ctx context.Context, cfg MergeConfig, name string, update []byte) er
 	if err := crdt.NewDoc(0).ApplyUpdate(update); err != nil {
 		return err
 	}
-	if _, err := cfg.Store.Append(ctx, store.DocumentID(name), [][]byte{update}); err != nil {
+	// The document may not exist at all: restoring into a database that has
+	// never heard of this name is the disaster-recovery case, and it is the one
+	// that must not need a read first.
+	id := store.DocumentID(name)
+	if err := cfg.Store.Ensure(ctx, id); err != nil {
+		return err
+	}
+	if _, err := cfg.Store.Append(ctx, id, [][]byte{update}); err != nil {
 		return fmt.Errorf("append: %w", err)
 	}
 	if cfg.Bus == nil {

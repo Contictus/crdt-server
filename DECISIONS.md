@@ -957,6 +957,62 @@ There is a matching footgun the server warns about: behind a load balancer with
 no `-trusted-proxies`, every client looks like the load balancer, so the cap
 would apply to the whole deployment at once.
 
+### D95. A version is a whole document, not a diff
+The obvious design is a chain of diffs, and it would be smaller. It was rejected
+for two reasons that both bite at the moment somebody needs it: reading one
+version becomes a walk through every version before it, and there is no way to
+drop an old one - which is the only operation retention consists of. A history
+you cannot prune is not a history, it is a leak.
+
+So each row is a complete Yjs update, and restoring is one read. What keeps the
+size honest is that a version is written only when its state vector differs from
+the newest one, so a document nobody edited produces one row however long the
+timer runs. `-version-keep` (24) bounds the rest.
+
+Rejected also: Yjs's own `Y.snapshot`, which is a state vector plus a delete set
+and reconstructs a past state with `createDocFromSnapshot`. It only works on a
+document created with garbage collection off, and it would need that function
+implemented in this engine - a large piece of work whose output would be the
+same bytes this design stores directly.
+
+### D96. The duplicate check is a condition on the insert, not a read then a write
+Every replica holding a document runs its own version timer, so the naive
+implementation produces one version per replica per interval.
+
+`SaveVersion` is a single statement whose `WHERE NOT EXISTS` covers both the age
+gate and the state-vector check. There is no window between deciding and
+writing, so three replicas offering a version in the same second produce one row
+- whichever gets there first - with no lock, no leader and no coordination.
+
+The room keeps a `versionDirty` flag purely as an optimisation: an unchanged
+document does not encode itself every interval only to have the store refuse it.
+Correctness lives in the statement; the flag saves the 26 µs.
+
+### D97. Restoring is DELETE then POST, and there is no restore endpoint
+`POST /documents/{name}` merges ([D89]), and CRDT updates cannot remove what a
+document has since gained. A `POST /versions/{id}/restore` would therefore hand
+back the union of the old version and the damage somebody was trying to undo -
+an endpoint whose name promises more than the format can deliver.
+
+Two visible steps say what is actually happening. The runbook and the README
+both spell them out, and `TestAVersionSurvivesSomebodyWreckingTheDocument` runs
+them end to end.
+
+### D98. Restoring into a document that never existed had to be made to work
+Writing that test found a real defect. `doc_updates` has a foreign key to
+`documents`, and the only thing that created a document row was `Load` - as a
+side effect of reading. So `Import` appended to the log of a parent that did not
+exist and returned 500.
+
+The backup test written a session earlier passed anyway, because it happened to
+`GET` the document between deleting and restoring it, and that read created the
+row. The bug was invisible until a test skipped the read - and the case it broke
+is restoring into an empty database, which is the disaster-recovery path.
+
+`Store.Ensure` is now an explicit statement on the `Persistence` interface, and
+`Import` calls it. The regression has its own test rather than staying covered
+by accident.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

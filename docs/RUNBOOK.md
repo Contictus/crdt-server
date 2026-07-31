@@ -270,6 +270,36 @@ A merge into a document people are already editing reaches them: the update is
 broadcast to every connection and published to the other replicas, so nobody is
 left building on a version the server no longer has.
 
+### One document, back to what it said before
+
+If `-version-interval` is set, the server has been keeping copies as the
+document changed, and you do not need a backup file at all:
+
+```bash
+# 1. Find the moment. Labels are on the versions somebody took by hand.
+curl -sf $ADMIN/documents/my-doc/versions | jq '.versions[] | {id, created_at, label, bytes}'
+
+# 2. Read it out and check it before you commit to it.
+curl -sf $ADMIN/documents/my-doc/versions/42 > yesterday.bin
+
+# 3. Put it back. The DELETE is not optional - see below.
+curl -sf -X DELETE $ADMIN/documents/my-doc
+curl -sf -X POST --data-binary @yesterday.bin $ADMIN/documents/my-doc
+```
+
+**The `DELETE` is not optional.** `POST` merges, and a CRDT update cannot remove
+what the document has since gained, so restoring without it gives you the union
+of the good version *and* whatever you were trying to undo.
+
+Take one before anything risky, and label it:
+
+```bash
+curl -sf -X POST "$ADMIN/documents/my-doc/versions?label=before+the+migration"
+```
+
+`201` means a version was written, `200` means the document has not changed
+since the last one and there was nothing new to store. Both are success.
+
 ### What a backup does not cover
 
 - **Awareness.** Cursors and presence are never persisted, by design. They are
@@ -332,6 +362,9 @@ The Kubernetes manifests in `deploy/k8s/` set both.
 Rare, and worth being careful with, because the recovery options destroy
 evidence.
 
+0. If `-version-interval` is set, the answer may already be stored: see
+   "One document, back to what it said before" above. The rest of this section
+   is for when it is not.
 1. **Do not restart the replica.** Its memory may hold the only correct copy.
 2. Take a backup of what it currently holds: `curl -sf $ADMIN/documents/my-doc > now.bin`.
    That read comes from the room.

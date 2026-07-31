@@ -149,6 +149,12 @@ func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registr
 	if documents != nil {
 		persistence = documents
 		mux.HandleFunc("DELETE /documents/{name}", deleteDocument(manager, documents, log))
+		// History needs a database by definition, so these are registered only
+		// when there is one. Without it the routes are absent and a caller gets
+		// a 404 that means "not on this server" rather than a 500 later.
+		mux.HandleFunc("GET /documents/{name}/versions", listVersions(documents, log))
+		mux.HandleFunc("GET /documents/{name}/versions/{id}", getVersion(documents, log))
+		mux.HandleFunc("POST /documents/{name}/versions", takeVersion(manager, documents, log))
 	}
 	mux.HandleFunc("GET /documents/{name}", getDocument(manager, persistence, log))
 	mux.HandleFunc("POST /documents/{name}", mergeDocument(manager, persistence, log))

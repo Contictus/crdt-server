@@ -30,6 +30,10 @@ import (
 // fresh room; see registry.go.
 var ErrClosed = errors.New("room: closed")
 
+// ErrNoVersioning means the server is not keeping history, which is what a
+// server without a database is doing.
+var ErrNoVersioning = errors.New("room: no version history is kept")
+
 // Defaults chosen in the brief.
 const (
 	// DefaultMailbox bounds how many commands can be waiting for the room
@@ -71,6 +75,18 @@ type Config struct {
 	// FlushInterval bounds how long an update sits in memory before it is
 	// written.
 	FlushInterval time.Duration
+
+	// Versions keeps the document's history. Nil means no history is kept, and
+	// then nothing is encoded for it.
+	Versions Versioning
+	// VersionInterval is how often a changed document has a version taken.
+	// Zero or less means only the ones somebody asks for by hand.
+	VersionInterval time.Duration
+	// VersionKeep is how many versions a document holds; older ones are
+	// deleted after a write. Zero applies the default, negative keeps
+	// everything - which is unbounded storage, since each version is a whole
+	// document.
+	VersionKeep int
 
 	// Bus relays this document's traffic to the other replicas holding it. Nil
 	// makes the room a single-node room, which is what Phase 2 and 3 were and
@@ -128,6 +144,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.CompactAfter <= 0 {
 		c.CompactAfter = DefaultCompactAfter
+	}
+	if c.VersionKeep == 0 {
+		c.VersionKeep = DefaultVersionKeep
 	}
 	// A negative interval means durable writes, so only zero - the unset value -
 	// takes the default.
@@ -192,6 +211,13 @@ type Room struct {
 	changes    uint64
 	storedRows atomic.Uint64
 
+	// versions is cfg.Versions, nil when no history is kept; versionDirty says
+	// whether anything has changed since the last attempt, and lastVersion when
+	// that was. All three are the room goroutine's. See versions.go.
+	versions     Versioning
+	versionDirty bool
+	lastVersion  time.Time
+
 	// remote carries envelopes from the bus into the room goroutine; pub carries
 	// ours out. Both are nil without a bus. Neither is ever blocked on: the room
 	// must not wait for the network, and the network must not wait for the room.
@@ -231,17 +257,18 @@ type connState struct {
 func New(cfg Config) *Room {
 	cfg.setDefaults()
 	r := &Room{
-		cfg:     cfg,
-		log:     cfg.Logger.With("room", cfg.Name),
-		doc:     crdt.NewDoc(cfg.ServerClientID),
-		aw:      protocol.NewAwarenessWithLimits(cfg.AwarenessLimits),
-		docID:   store.DocumentID(cfg.Name),
-		stats:   cfg.Stats,
-		metrics: cfg.Metrics,
-		hooks:   cfg.Hooks,
-		conns:   make(map[Conn]*connState),
-		mailbox: make(chan command, cfg.Mailbox),
-		done:    make(chan struct{}),
+		cfg:      cfg,
+		log:      cfg.Logger.With("room", cfg.Name),
+		doc:      crdt.NewDoc(cfg.ServerClientID),
+		aw:       protocol.NewAwarenessWithLimits(cfg.AwarenessLimits),
+		docID:    store.DocumentID(cfg.Name),
+		stats:    cfg.Stats,
+		metrics:  cfg.Metrics,
+		hooks:    cfg.Hooks,
+		versions: cfg.Versions,
+		conns:    make(map[Conn]*connState),
+		mailbox:  make(chan command, cfg.Mailbox),
+		done:     make(chan struct{}),
 	}
 	if cfg.Store != nil {
 		r.jobs = make(chan persistJob, persistQueue)
@@ -388,6 +415,8 @@ func (r *Room) handle(c command) bool {
 		r.read(v)
 	case mergeCmd:
 		r.merge(v)
+	case versionCmd:
+		r.takeVersion(v)
 	case evictCmd:
 		if len(r.conns) > 0 {
 			v.evicted <- false
@@ -554,6 +583,7 @@ func (r *Room) update(conn Conn, update []byte) {
 		return
 	}
 	r.record(update)
+	r.versionDirty = true
 	// Only local edits raise a change event. An update that arrived on the bus
 	// was already reported by the replica whose client made it, and counting it
 	// again here would turn one edit into one webhook per replica holding the
@@ -622,6 +652,7 @@ func (r *Room) tick(now time.Time) bool {
 	}
 	r.announce(now)
 	r.emitHooks(now)
+	r.versionTick(now)
 	if len(r.conns) > 0 || r.lastEmpty.IsZero() {
 		return false
 	}

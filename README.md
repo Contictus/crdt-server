@@ -226,6 +226,60 @@ published to the other replicas, so nobody is left building on a version the ser
 has. A body that is not an update, or one that carries nothing, is refused with 400 rather than
 written and reported as a success.
 
+### Version history
+
+`-version-interval 1h` keeps a copy of each document as it changes, so there is an answer to
+"what did this say before somebody pasted over it". Nothing else in the server can answer that:
+a CRDT update log records what was *added*, and compaction folds it away by design.
+
+```bash
+# What versions are there?
+curl -s $ADMIN/documents/my-doc/versions | jq
+
+# Take one now, before doing something risky.
+curl -s -X POST "$ADMIN/documents/my-doc/versions?label=before+the+migration"
+
+# Read one. Same form as the document read API, so one piece of client code opens both.
+curl -s $ADMIN/documents/my-doc/versions/42 > yesterday.bin
+```
+
+The listing carries when, how big, the label and the state vector — enough to choose from
+without downloading anything:
+
+```json
+{
+  "document": "my-doc",
+  "versions": [
+    { "id": 42, "created_at": "2026-07-30T09:00:00Z", "state_vector": "AQKf1Y…", "label": "before the migration", "bytes": 1841 }
+  ]
+}
+```
+
+**Restoring is two steps, on purpose:**
+
+```bash
+curl -sf -X DELETE $ADMIN/documents/my-doc
+curl -sf -X POST --data-binary @yesterday.bin $ADMIN/documents/my-doc
+```
+
+There is no one-call restore, because `POST` merges and cannot remove what the document has
+since gained. Skipping the `DELETE` gives you the union of the good version *and* the damage —
+which is exactly what you were trying to undo. Two visible steps beat one endpoint whose name
+promises more than it does.
+
+**On storage.** Each version is a whole document, so hourly versions of a 1 MB document would be
+24 MB a day if they were all written. Two things stop that:
+
+- A version is only stored when its **state vector differs** from the newest one. A document
+  nobody edited gets one row however long the timer runs.
+- `-version-keep` (24 by default) bounds the count per document; older ones go after each write.
+  Negative keeps everything, which is unbounded storage — say so out loud before choosing it.
+
+In a cluster every replica holding a document runs its own timer. They do not produce three
+versions per interval: the "is one already this recent" check is a condition on the insert, so
+whichever replica gets there first wins and the others write nothing. Deleting a document takes
+its history with it.
+
 ### Webhooks
 
 `-webhook-url` makes the server POST a JSON body when something happens to a document, which

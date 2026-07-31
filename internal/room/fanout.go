@@ -163,6 +163,11 @@ func (r *Room) remoteUpdate(update []byte) {
 		return
 	}
 	r.stats.RemoteUpdateApplied.Add(1)
+	// The document changed, so a version taken here would say something new.
+	// This does not duplicate the origin replica's version: the store's age
+	// gate lets one through per interval whoever offers it, and this replica
+	// may be the only one still holding the document by the time it is due.
+	r.versionDirty = true
 	// Relay the author's bytes, exactly as the local path does, so a client on
 	// this replica receives what a client on the origin replica received.
 	r.broadcast(protocol.WriteUpdate(update), nil)

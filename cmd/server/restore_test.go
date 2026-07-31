@@ -112,6 +112,41 @@ func TestARestoreReachesTheClientsAlreadyConnected(t *testing.T) {
 	}
 }
 
+// Restoring into a database that has never heard of the document is the
+// disaster-recovery case, and it must not need a read first.
+//
+// It did, once: the log's foreign key wants a documents row, and only Load
+// created one - as a side effect of reading. The backup test above happened to
+// read the document between deleting and restoring it, so it passed while a
+// restore into an empty database returned 500. This asserts the path directly.
+func TestRestoringADocumentThatHasNeverExisted(t *testing.T) {
+	dbURL := os.Getenv(dbEnv)
+	if dbURL == "" {
+		t.Skipf("%s is not set; start deploy/docker-compose.yml to run this", dbEnv)
+	}
+	srv := startServer(t, buildServer(t), freePort(t), dbURL)
+
+	// Bytes from one document, restored under a name nothing has ever opened.
+	source := fmt.Sprintf("restore-source-%d", time.Now().UnixNano())
+	c := dial(t, srv.addr, source)
+	c.sync()
+	for _, u := range scenarioUpdatesFor(t, "text-three-client-interleaved") {
+		c.send(protocol.WriteUpdate(u))
+	}
+	c.send(protocol.WriteSyncStep1(emptyStateVector(t)))
+	c.recv()
+	backup := mustGet(t, srv, "/documents/"+source)
+	want := textOfUpdate(t, backup)
+
+	fresh := fmt.Sprintf("restore-fresh-%d", time.Now().UnixNano())
+	if code := post(t, srv, "/documents/"+fresh, backup); code != http.StatusNoContent {
+		t.Fatalf("restoring into a name nothing has opened returned %d\n%s", code, srv.logs)
+	}
+	if got := textOfUpdate(t, mustGet(t, srv, "/documents/"+fresh)); got != want {
+		t.Errorf("the restored document reads %q, want %q", got, want)
+	}
+}
+
 // A body that is not an update, or one that carries nothing, is refused. Both
 // would otherwise be written, published and reported as a success having
 // changed nothing.
