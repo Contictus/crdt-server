@@ -139,7 +139,11 @@ type callbackResponse struct {
 	Allow   *bool  `json:"allow"`
 	Write   bool   `json:"write"`
 	Subject string `json:"subject"`
-	Reason  string `json:"reason"`
+	// Owner is the tenant this connection belongs to. The endpoint knows it -
+	// it is the thing that just looked the user up - so this is where it
+	// belongs; a token would have to carry it and be minted per tenant.
+	Owner  string `json:"owner"`
+	Reason string `json:"reason"`
 	// TTL is seconds this decision may be reused for. It only ever shortens the
 	// configured cache lifetime.
 	TTL int `json:"ttl"`
@@ -431,6 +435,7 @@ func (c *Callback) ask(ctx context.Context, req Request) answer {
 		grant: Grant{
 			Subject: sanitize(decoded.Subject),
 			Doc:     req.Document,
+			Owner:   sanitize(decoded.Owner),
 			Write:   decoded.Write,
 		},
 		ttl:       ttl,

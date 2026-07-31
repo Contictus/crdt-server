@@ -384,7 +384,7 @@ func authorizer(secrets string, cfg auth.Config, cb auth.CallbackConfig, log *sl
 			if err != nil {
 				return gateway.Grant{}, err
 			}
-			return gateway.Grant{Subject: grant.Subject, Write: grant.Write}, nil
+			return gateway.Grant{Subject: grant.Subject, Write: grant.Write, Owner: grant.Owner}, nil
 		}, nil
 	}
 
@@ -409,7 +409,7 @@ func authorizer(secrets string, cfg auth.Config, cb auth.CallbackConfig, log *sl
 			// about the key or the check.
 			return gateway.Grant{}, err
 		}
-		return gateway.Grant{Subject: grant.Subject, Write: grant.Write}, nil
+		return gateway.Grant{Subject: grant.Subject, Write: grant.Write, Owner: grant.Owner}, nil
 	}, nil
 }
 

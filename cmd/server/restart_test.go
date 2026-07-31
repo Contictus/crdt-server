@@ -397,7 +397,7 @@ func TestCompactedDocumentSurvivesAKill(t *testing.T) {
 	id := store.DocumentID(doc)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
-		loaded, err := db.Load(ctx, id)
+		loaded, err := db.LoadAny(ctx, id)
 		if err != nil {
 			t.Fatal(err)
 		}

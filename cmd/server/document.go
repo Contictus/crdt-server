@@ -153,7 +153,24 @@ func mergeDocument(manager *room.Manager, documents room.Persistence, log *slog.
 			return
 		}
 
+		// ?owner= names whose document this is. It stamps a document being
+		// created, and is checked against one that already exists - so restoring
+		// one tenant's bytes into another's document takes more than a typo in a
+		// URL. Omitted, the existing owner is left alone and a new document is
+		// owned by nobody.
+		owner := r.URL.Query().Get("owner")
+
 		if resident := manager.Resident(name); resident != nil {
+			// The room already knows whose document this is, so the check
+			// happens here rather than in the store. Missing it was a real hole:
+			// the check below only runs when no room holds the document, so a
+			// cross-tenant restore succeeded for exactly the documents somebody
+			// was editing at the time. Found by a test that wrote into a
+			// document while its owner had it open.
+			if owner != "" && !resident.OwnedBy(owner) {
+				http.Error(w, "the document belongs to another owner", http.StatusConflict)
+				return
+			}
 			switch err := resident.Merge(update); {
 			case err == nil:
 				log.Warn("document merged", "document", name, "bytes", len(update), "resident", true)
@@ -174,8 +191,11 @@ func mergeDocument(manager *room.Manager, documents room.Persistence, log *slog.
 			Store:  documents,
 			Bus:    manager.Bus(),
 			NodeID: manager.NodeID(),
+			Owner:  owner,
 		}, name, update)
 		switch {
+		case wrongOwner(err):
+			http.Error(w, "the document belongs to another owner", http.StatusConflict)
 		case errors.Is(err, room.ErrNoDocument):
 			// No store and no room: there is nowhere to put it that would
 			// survive the next second.

@@ -138,6 +138,12 @@ spec:
             # mount a volume for it: a file inside the container dies with it.
             - name: YCOLLAB_AUDIT_LOG
               value: "-"
+            # Multi-tenancy is a property of the tokens, not of a flag here: put
+            # an "own" claim in them (or return "owner" from -auth-url) and a
+            # document becomes reachable only by the tenant that opened it.
+            # Nothing to configure on this side, and nothing changes for a
+            # deployment whose tokens carry no owner - see the runbook before
+            # turning it on for a database that already has documents in it.
           ports:
             - { name: ws, containerPort: 8080 }
             - { name: admin, containerPort: 6060 }

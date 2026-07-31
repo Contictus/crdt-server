@@ -48,7 +48,7 @@ func TestRoomsLeaveNoGoroutinesBehind(t *testing.T) {
 	for i := range 20 {
 		name := "doc-" + string(rune('a'+i%26)) + string(rune('0'+i/26))
 		c := &fakeConn{id: uint64(i + 1)}
-		if _, err := m.Join(name, c); err != nil {
+		if _, err := m.Join(name, c, ""); err != nil {
 			t.Fatalf("join %s: %v", name, err)
 		}
 		r := m.Resident(name)
@@ -95,7 +95,7 @@ func TestARoomThatCannotLoadLeavesNothingBehind(t *testing.T) {
 		c := &fakeConn{id: uint64(i + 1)}
 		// The join itself succeeds or fails depending on how far the room got;
 		// either is fine. What matters is what is left running.
-		_, _ = m.Join("doc-"+string(rune('a'+i)), c)
+		_, _ = m.Join("doc-"+string(rune('a'+i)), c, "")
 	}
 	m.Wait()
 

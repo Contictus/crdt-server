@@ -7,10 +7,23 @@
 CREATE TABLE IF NOT EXISTS documents (
     id            UUID PRIMARY KEY,
     owner_id      UUID NOT NULL,
+    -- The name the document is reached by, which is the URL path clients open.
+    -- The id is derived from it by a one-way hash, so without this column a
+    -- listing could return identifiers and nothing anybody could open. Empty
+    -- for rows written before this column existed; see the runbook.
+    name          TEXT NOT NULL DEFAULT '',
     snapshot      BYTEA,
     snapshot_seq  BIGINT NOT NULL DEFAULT 0,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- For databases that predate the column. Migrate runs the whole file on every
+-- boot, so every statement here has to be safe to run again.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+
+-- Listing is always "this owner's documents, by name". The owner comes first
+-- because it is the equality, and multi-tenancy makes it the selective one.
+CREATE INDEX IF NOT EXISTS documents_by_owner ON documents (owner_id, name, id);
 
 CREATE TABLE IF NOT EXISTS doc_updates (
     doc_id      UUID   NOT NULL REFERENCES documents(id) ON DELETE CASCADE,

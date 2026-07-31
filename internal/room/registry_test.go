@@ -15,18 +15,18 @@ func TestManagerReusesRoomsPerName(t *testing.T) {
 	defer cancel()
 	m := NewManager(ctx, ManagerConfig{Room: Config{IdleTimeout: time.Hour}})
 
-	a, err := m.Join("doc-1", &fakeConn{id: 1})
+	a, err := m.Join("doc-1", &fakeConn{id: 1}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.Join("doc-1", &fakeConn{id: 2})
+	b, err := m.Join("doc-1", &fakeConn{id: 2}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if a != b {
 		t.Fatal("two connections to the same document got different rooms")
 	}
-	if _, err := m.Join("doc-2", &fakeConn{id: 3}); err != nil {
+	if _, err := m.Join("doc-2", &fakeConn{id: 3}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got := m.Len(); got != 2 {
@@ -39,14 +39,14 @@ func TestManagerCapsResidentRooms(t *testing.T) {
 	defer cancel()
 	m := NewManager(ctx, ManagerConfig{MaxRooms: 1, Room: Config{IdleTimeout: time.Hour}})
 
-	if _, err := m.Join("doc-1", &fakeConn{id: 1}); err != nil {
+	if _, err := m.Join("doc-1", &fakeConn{id: 1}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Join("doc-2", &fakeConn{id: 2}); !errors.Is(err, ErrTooManyRooms) {
+	if _, err := m.Join("doc-2", &fakeConn{id: 2}, ""); !errors.Is(err, ErrTooManyRooms) {
 		t.Fatalf("got %v, want ErrTooManyRooms", err)
 	}
 	// The cap is on distinct documents, not connections.
-	if _, err := m.Join("doc-1", &fakeConn{id: 3}); err != nil {
+	if _, err := m.Join("doc-1", &fakeConn{id: 3}, ""); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -66,15 +66,15 @@ func TestManagerEvictsLeastRecentlyUsed(t *testing.T) {
 	}})
 
 	oldest := &fakeConn{id: 1}
-	if _, err := m.Join("doc-1", oldest); err != nil {
+	if _, err := m.Join("doc-1", oldest, ""); err != nil {
 		t.Fatal(err)
 	}
 	newer := &fakeConn{id: 2}
-	if _, err := m.Join("doc-2", newer); err != nil {
+	if _, err := m.Join("doc-2", newer, ""); err != nil {
 		t.Fatal(err)
 	}
 	// doc-1 is now idle and least recently used; doc-2 still has a connection.
-	if _, err := m.Join("doc-1", oldest); err != nil {
+	if _, err := m.Join("doc-1", oldest, ""); err != nil {
 		t.Fatal(err)
 	}
 	// Give it something worth writing: an eviction with nothing to fold is a
@@ -87,7 +87,7 @@ func TestManagerEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 
 	// doc-3 does not fit, so the idle room goes and its document is written.
-	if _, err := m.Join("doc-3", &fakeConn{id: 3}); err != nil {
+	if _, err := m.Join("doc-3", &fakeConn{id: 3}, ""); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	if m.Len() != 2 {
@@ -104,7 +104,7 @@ func TestManagerEvictsLeastRecentlyUsed(t *testing.T) {
 	}
 
 	// A room with somebody in it is never evicted for space.
-	if _, err := m.Join("doc-4", &fakeConn{id: 4}); !errors.Is(err, ErrTooManyRooms) {
+	if _, err := m.Join("doc-4", &fakeConn{id: 4}, ""); !errors.Is(err, ErrTooManyRooms) {
 		t.Fatalf("got %v, want ErrTooManyRooms", err)
 	}
 	if closed, _ := newer.status(); closed {
@@ -116,7 +116,7 @@ func TestManagerCancelClosesRooms(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := NewManager(ctx, ManagerConfig{Room: Config{IdleTimeout: time.Hour}})
 	c := &fakeConn{id: 1}
-	r, err := m.Join("doc-1", c)
+	r, err := m.Join("doc-1", c, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestJoinRacesEviction(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			c := &fakeConn{id: uint64(i)}
-			r, err := m.Join("doc", c)
+			r, err := m.Join("doc", c, "")
 			if err != nil {
 				t.Errorf("join: %v", err)
 				return
@@ -179,7 +179,7 @@ func TestManagerForgetsEvictedRooms(t *testing.T) {
 	}})
 
 	c := &fakeConn{id: 1}
-	r, err := m.Join("doc", c)
+	r, err := m.Join("doc", c, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +194,7 @@ func TestManagerForgetsEvictedRooms(t *testing.T) {
 			t.Fatal("evicted room is still registered")
 		}
 	}
-	next, err := m.Join("doc", &fakeConn{id: 2})
+	next, err := m.Join("doc", &fakeConn{id: 2}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

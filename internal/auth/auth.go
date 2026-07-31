@@ -43,6 +43,11 @@ type Claims struct {
 	// Perm is "read" or "write". An absent value means read: the safe direction
 	// for a field somebody forgot to set.
 	Perm Permission `json:"perm,omitempty"`
+	// Own is the tenant this token belongs to. Absent means none, which is the
+	// safe direction again: a token with no owner reaches only documents that
+	// have no owner, so a deployment that has not thought about tenancy gets
+	// the behaviour it had before tenancy existed.
+	Own string `json:"own,omitempty"`
 }
 
 // A Grant is the answer to "who is this and what may they do".
@@ -51,6 +56,8 @@ type Grant struct {
 	Subject string
 	// Doc is the document the token names.
 	Doc string
+	// Owner is the tenant the token belongs to, empty for none.
+	Owner string
 	// Write says whether this connection may send updates.
 	Write bool
 	// ExpiresAt is the token's expiry, zero if it has none.
@@ -213,6 +220,7 @@ func (v *Verifier) Verify(token, doc string) (Grant, error) {
 	grant := Grant{
 		Subject: claims.Subject,
 		Doc:     claims.Doc,
+		Owner:   claims.Own,
 		Write:   perm == PermissionWrite,
 	}
 	if expiry != nil {

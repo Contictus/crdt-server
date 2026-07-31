@@ -120,7 +120,9 @@ func Fetch(ctx context.Context, p Persistence, name string, sv []byte) (Snapshot
 	if p == nil {
 		return Snapshot{}, ErrNoDocument
 	}
-	stored, err := p.Load(ctx, store.DocumentID(name))
+	// LoadAny, not Load: this is the administrative read, which is above the
+	// tenancy boundary and must not create a row for a name that has none.
+	stored, err := p.LoadAny(ctx, store.DocumentID(name))
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -153,6 +155,13 @@ func Fetch(ctx context.Context, p Persistence, name string, sv []byte) (Snapshot
 
 // Resident returns the room holding a document, or nil if none does. It does
 // not create one.
+// OwnedBy reports whether this room's document belongs to the named tenant.
+//
+// Read without synchronisation on purpose: the owner is settled before the room
+// is constructed and never changes afterwards - the only way to move a document
+// is to evict it first - so there is nothing to race with.
+func (r *Room) OwnedBy(owner string) bool { return r.owner == store.OwnerID(owner) }
+
 func (m *Manager) Resident(name string) *Room {
 	m.mu.Lock()
 	defer m.mu.Unlock()

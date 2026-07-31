@@ -26,11 +26,44 @@ type fakeStore struct {
 	seq       int64
 	loadErr   error
 	appendErr error
+	// owners is the tenancy boundary: whoever opened a name first owns it.
+	owners map[string]store.UUID
 }
 
-func (f *fakeStore) Ensure(context.Context, store.UUID) error { return f.loadErr }
+// Ensure records the owner the first caller claimed and answers every later
+// one with it, which is the part of the real store's behaviour the tenancy
+// boundary rests on.
+func (f *fakeStore) Ensure(_ context.Context, _ store.UUID, name string, owner store.UUID) (store.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return store.NilUUID, f.loadErr
+	}
+	if f.owners == nil {
+		f.owners = make(map[string]store.UUID)
+	}
+	if found, ok := f.owners[name]; ok {
+		return found, nil
+	}
+	f.owners[name] = owner
+	return owner, nil
+}
 
-func (f *fakeStore) Load(context.Context, store.UUID) (*store.Document, error) {
+func (f *fakeStore) Load(_ context.Context, _ store.UUID, name string, owner store.UUID) (*store.Document, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
+	if found, ok := f.owners[name]; ok && found != owner {
+		return nil, store.ErrWrongOwner
+	}
+	doc := f.doc
+	doc.Owner = owner
+	return &doc, nil
+}
+
+func (f *fakeStore) LoadAny(context.Context, store.UUID) (*store.Document, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.loadErr != nil {

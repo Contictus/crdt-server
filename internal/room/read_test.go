@@ -158,7 +158,7 @@ func TestResidentDoesNotCreate(t *testing.T) {
 	if m.Len() != 0 {
 		t.Fatalf("%d rooms are resident after a lookup", m.Len())
 	}
-	if _, err := m.Join("notes", &fakeConn{id: 1}); err != nil {
+	if _, err := m.Join("notes", &fakeConn{id: 1}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if r := m.Resident("notes"); r == nil {

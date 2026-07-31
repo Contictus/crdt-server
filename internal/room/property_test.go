@@ -23,7 +23,7 @@ const propertyIterations = 1000
 // order Yjs produced them.
 func scenarioUpdates(t *testing.T, name string) [][]byte {
 	t.Helper()
-	dir := filepath.Join(fixturesDir, name)
+	dir := filepath.Join(fixturesDir, name, "")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)

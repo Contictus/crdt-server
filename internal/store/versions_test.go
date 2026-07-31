@@ -16,7 +16,7 @@ import (
 func TestVersionsAreWrittenOnlyWhenTheyDiffer(t *testing.T) {
 	s, ctx := openStore(t)
 	id := store.DocumentID(fmt.Sprintf("versions-%d", time.Now().UnixNano()))
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,7 +67,7 @@ func TestVersionsAreWrittenOnlyWhenTheyDiffer(t *testing.T) {
 func TestTheAgeGateStopsReplicasDuplicatingAVersion(t *testing.T) {
 	s, ctx := openStore(t)
 	id := store.DocumentID(fmt.Sprintf("versions-age-%d", time.Now().UnixNano()))
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,7 +92,7 @@ func TestTheAgeGateStopsReplicasDuplicatingAVersion(t *testing.T) {
 func TestPruningKeepsTheNewest(t *testing.T) {
 	s, ctx := openStore(t)
 	id := store.DocumentID(fmt.Sprintf("versions-prune-%d", time.Now().UnixNano()))
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 	for i := range 6 {
@@ -130,7 +130,7 @@ func TestAVersionBelongsToItsDocument(t *testing.T) {
 	mine := store.DocumentID(fmt.Sprintf("versions-mine-%d", time.Now().UnixNano()))
 	theirs := store.DocumentID(fmt.Sprintf("versions-theirs-%d", time.Now().UnixNano()))
 	for _, id := range []store.UUID{mine, theirs} {
-		if _, err := s.Load(ctx, id); err != nil {
+		if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -160,7 +160,7 @@ func TestAVersionBelongsToItsDocument(t *testing.T) {
 func TestDeletingADocumentTakesItsVersions(t *testing.T) {
 	s, ctx := openStore(t)
 	id := store.DocumentID(fmt.Sprintf("versions-cascade-%d", time.Now().UnixNano()))
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SaveVersion(ctx, id, store.Version{StateVector: []byte{1}, Payload: []byte{1}}, 0); err != nil {

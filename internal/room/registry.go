@@ -3,11 +3,14 @@ package room
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/metrics"
+	"github.com/mesutokul/ycollab/internal/store"
 )
 
 // ErrTooManyRooms means the resident-room cap is reached and every resident
@@ -66,15 +69,27 @@ func NewManager(ctx context.Context, cfg ManagerConfig) *Manager {
 	}
 }
 
-// Join places conn in the named room, creating and starting the room if needed.
+// ErrWrongOwner means the document exists and belongs to another tenant. The
+// gateway turns it into the same refusal a bad token gets: a client must not be
+// able to tell "this document is not yours" from "there is no such document",
+// or the boundary becomes a way to enumerate other people's document names.
+var ErrWrongOwner = store.ErrWrongOwner
+
+// Join places conn in the named room on behalf of owner, creating and starting
+// the room if needed.
+//
+// owner is the tenant the connection's grant named, empty for a connection that
+// claims none. It is settled against the database once, when the document is
+// opened, and held on the room - so the second and every later connection is
+// answered from memory rather than costing a query.
 //
 // A room can decide to evict itself at any moment, including between the lookup
 // and the handover. The room's shutdown removes itself from this map before it
 // starts refusing joins, so observing ErrClosed proves the map no longer holds
 // that room and one retry is enough.
-func (m *Manager) Join(name string, conn Conn) (*Room, error) {
+func (m *Manager) Join(name string, conn Conn, owner string) (*Room, error) {
 	for {
-		r, err := m.get(name)
+		r, err := m.get(name, owner)
 		if err != nil {
 			return nil, err
 		}
@@ -89,9 +104,9 @@ func (m *Manager) Join(name string, conn Conn) (*Room, error) {
 	}
 }
 
-func (m *Manager) get(name string) (*Room, error) {
+func (m *Manager) get(name, owner string) (*Room, error) {
 	for {
-		r, candidates, err := m.tryGet(name)
+		r, candidates, err := m.tryGet(name, owner)
 		if err != nil {
 			return nil, err
 		}
@@ -110,10 +125,36 @@ func (m *Manager) get(name string) (*Room, error) {
 
 // tryGet returns the room, or the eviction candidates in least-recently-used
 // order when the cap is in the way.
-func (m *Manager) tryGet(name string) (*Room, []*Room, error) {
+func (m *Manager) tryGet(name, owner string) (*Room, []*Room, error) {
+	want := store.OwnerID(owner)
+
+	// A document that is already open has already been settled, so the common
+	// case - every reconnect, every second tab - is a map lookup and a
+	// comparison rather than a query. Compared as ids, not as the names they
+	// came from: a tenant may be named by its slug in one token and by its UUID
+	// in another, and both are the same owner.
+	if r, resident, err := m.resident(name, want); resident {
+		return r, nil, err
+	}
+
+	// Not open here. The database is the authority on whose it is, and it is
+	// asked outside the lock: this lock is the one every join in the process
+	// shares, and a round trip under it would serialise the whole node behind
+	// one document being opened.
+	if err := m.settleOwner(name, want); err != nil {
+		return nil, nil, err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Somebody may have opened it while the query was in flight. They settled
+	// the same question against the same row, so agreeing with them is right -
+	// but the comparison still happens, because "somebody" may be another
+	// tenant who was refused and a third who was not.
 	if r, ok := m.rooms[name]; ok {
+		if r.owner != want {
+			return nil, nil, fmt.Errorf("%w: %s", ErrWrongOwner, name)
+		}
 		m.touch(name)
 		return r, nil, nil
 	}
@@ -132,6 +173,7 @@ func (m *Manager) tryGet(name string) (*Room, []*Room, error) {
 	m.touch(name)
 	cfg := m.cfg.Room
 	cfg.Name = name
+	cfg.Owner = owner
 	r := New(cfg)
 	// The room's exit hook removes this exact room, never whatever happens to
 	// be registered under the name later. Set after New and before Run, so no
@@ -147,6 +189,56 @@ func (m *Manager) tryGet(name string) (*Room, []*Room, error) {
 	}()
 	return r, nil, nil
 }
+
+// resident answers from the rooms already open, reporting whether it could.
+func (m *Manager) resident(name string, want store.UUID) (*Room, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rooms[name]
+	if !ok {
+		return nil, false, nil
+	}
+	if r.owner != want {
+		return nil, true, fmt.Errorf("%w: %s", ErrWrongOwner, name)
+	}
+	m.touch(name)
+	return r, true, nil
+}
+
+// settleOwner asks the database who owns this document, and refuses the caller
+// if it is not them.
+//
+// The row is created if it is not there and its owner is read back, in one
+// transaction, so two connections racing to open a new document both learn the
+// same answer rather than each inserting their own.
+//
+// Without a store there is nothing durable to consult and the caller's word
+// stands. That is not a hole: the room keeps what it was told, and every later
+// connection is compared against it, so a server with no database still refuses
+// a second tenant a document the first one opened. It just forgets when the
+// room does, which is what a server with no database does about everything.
+func (m *Manager) settleOwner(name string, want store.UUID) error {
+	p := m.cfg.Room.Store
+	if p == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, settleTimeout)
+	defer cancel()
+	found, err := p.Ensure(ctx, store.DocumentID(name), name, want)
+	if err != nil {
+		return err
+	}
+	if found != want {
+		return fmt.Errorf("%w: %s", ErrWrongOwner, name)
+	}
+	return nil
+}
+
+// settleTimeout bounds the one query a join makes. A client is waiting on it
+// with an open socket, so it is short: a database that cannot answer this in ten
+// seconds is a database that is down, and the connection should be told so
+// rather than held.
+const settleTimeout = 10 * time.Second
 
 // touch records that a room was just used. Called with the lock held.
 func (m *Manager) touch(name string) {

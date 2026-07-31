@@ -15,8 +15,13 @@ import (
 // parts are written out.
 type UUID [16]byte
 
-// NilUUID is the all-zero UUID. It stands in for `owner_id` until Phase 5
-// introduces real users; the column is NOT NULL, so something has to.
+// NilUUID is the all-zero UUID. It is the owner of a document that has none:
+// what a server running without multi-tenancy writes, and what every row
+// written before tenancy existed carries.
+//
+// It is a real value with real meaning, not a placeholder. A document owned by
+// nobody is reachable only by a connection that claims no owner, so turning
+// tenancy on does not quietly hand the existing documents to whoever asks first.
 var NilUUID UUID
 
 // documentNamespace is the UUID namespace room names are hashed under. It is an
@@ -43,6 +48,36 @@ func DocumentID(name string) UUID {
 		return id
 	}
 	return uuidV5(documentNamespace, name)
+}
+
+// ownerNamespace is the namespace tenant names are hashed under. A different
+// constant from documentNamespace on purpose: a tenant called "notes" and a
+// document called "notes" must not become the same identifier, and one shared
+// namespace is how that would happen.
+var ownerNamespace = UUID{
+	0xb7, 0x3c, 0x41, 0xd8, 0x0a, 0x9f, 0x4e, 0x26,
+	0x8c, 0x5d, 0x92, 0xf0, 0x17, 0x6b, 0xe3, 0xa4,
+}
+
+// OwnerID maps a tenant name to an owner id, the same way DocumentID maps a
+// room name to a document id.
+//
+// An application's idea of a tenant is very often not a UUID - it is a slug, an
+// account number, a subdomain. Requiring one here would mean every deployment
+// carrying a lookup table for the sake of a column type. A name that already is
+// a UUID is taken as one, so an application that does have them loses nothing.
+//
+// The empty string is NilUUID: "no tenant" has to survive the round trip, and a
+// hash of "" would be an ordinary owner that nothing could ever match by
+// accident but that would still read as owned.
+func OwnerID(tenant string) UUID {
+	if tenant == "" {
+		return NilUUID
+	}
+	if id, err := ParseUUID(tenant); err == nil {
+		return id
+	}
+	return uuidV5(ownerNamespace, tenant)
 }
 
 // uuidV5 is RFC 4122 §4.3: SHA-1 over the namespace and the name, with the

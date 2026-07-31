@@ -119,6 +119,79 @@ either the old holders are broken or the new token is not accepted yet. The audi
 what makes the last step of that rotation safe: it says whether the old token is still being used
 before anybody removes it.
 
+### Multi-tenancy
+
+Without it, a token that names a document is enough to open it — so any user of
+any customer who learns a document name can read it. `owner` closes that.
+
+A document is stamped with the owner of whoever opens it first, and every later
+connection must match. The owner comes from the grant: the `own` claim in a JWT,
+or `"owner"` in the authorization callback's answer.
+
+```json
+{ "doc": "notes", "perm": "write", "own": "acme", "sub": "ada", "exp": 1785400000 }
+```
+
+A tenant name is any string — a slug, an account number, a subdomain — hashed into
+the `owner_id` column, so no deployment needs a lookup table to satisfy a column
+type. A name that already is a UUID is used as one.
+
+**No owner is an owner.** A token with no `own` claim reaches only documents that
+have no owner, and a tenant does not inherit the documents that have none. That is
+what makes turning tenancy on safe: every document in a database that predates it
+stays exactly where it was, reachable by the tokens that already worked, and no
+tenant silently acquires them by connecting first. Moving them is a deliberate
+operator action:
+
+```bash
+curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"owner":"acme"}'   http://127.0.0.1:6060/documents/notes/owner
+```
+
+A document somebody is editing is refused rather than moved under them; close the
+connections, or wait for the room to go idle.
+
+The refusal a client sees is the same one a bad token gets, word for word.
+Distinguishing "this is not yours" from "there is no such document" would make the
+boundary a way to enumerate other customers' document names, one guess at a time.
+
+The admin listener is above the boundary by design — it can already delete any
+document — which is why it needs its own credential and why everything on it is
+audited.
+
+### Listing documents
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:6060/documents?owner=acme&limit=50"
+```
+
+```json
+{
+  "documents": [
+    { "name": "notes", "id": "f81d4fae-...", "owner_id": "3b1e...", "resident": true,
+      "updated_at": "2026-07-31T09:14:02Z", "snapshot_bytes": 4210, "updates": 17 }
+  ],
+  "next": "notes/f81d4fae-..."
+}
+```
+
+Sizes, never content: a listing is for deciding what to fetch. Omit `owner` for
+the operator's view of everything; pass `owner=` with an empty value for the
+documents that belong to nobody.
+
+`next` is a keyset cursor — pass it back as `?after=`. Keyset rather than an
+offset because a tenant's documents change while somebody pages through them, and
+an offset would skip or repeat rows as they do. It also costs the same on page a
+thousand as on page one, which matters because paging this is how "delete
+everything belonging to this account" is carried out.
+
+`resident` is about *this* replica. Another one may hold the document and this one
+would not know.
+
+**One caveat for existing databases.** Document ids are a one-way hash of the
+name, so rows written before the server recorded names have an empty `name` and
+cannot be opened from a listing alone. `PUT .../owner` records the name as a side
+effect, and the runbook has a bulk statement.
+
 ### The audit trail
 
 The admin listener can read, overwrite and delete every document, so what happens on it is

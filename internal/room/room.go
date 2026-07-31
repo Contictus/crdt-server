@@ -52,6 +52,15 @@ const (
 type Config struct {
 	Name string
 
+	// Owner is the tenant this room's document belongs to, as the manager
+	// settled it against the database. Empty means the document is owned by
+	// nobody, which is what a server without multi-tenancy writes.
+	//
+	// It is on the room rather than looked up per connection so that the second
+	// and every later connection to a resident document is answered from
+	// memory: the boundary is checked once, when the document is opened.
+	Owner string
+
 	// ServerClientID is the client id the room's Doc is created with. The
 	// server never authors content, so this only matters if a later phase makes
 	// it edit documents itself.
@@ -188,6 +197,7 @@ type Room struct {
 	doc   *crdt.Doc
 	aw    *protocol.Awareness
 	docID store.UUID
+	owner store.UUID
 
 	// jobs carries work to the persist goroutine; nil when there is no store.
 	// Only the room goroutine touches it.
@@ -262,6 +272,7 @@ func New(cfg Config) *Room {
 		doc:      crdt.NewDoc(cfg.ServerClientID),
 		aw:       protocol.NewAwarenessWithLimits(cfg.AwarenessLimits),
 		docID:    store.DocumentID(cfg.Name),
+		owner:    store.OwnerID(cfg.Owner),
 		stats:    cfg.Stats,
 		metrics:  cfg.Metrics,
 		hooks:    cfg.Hooks,

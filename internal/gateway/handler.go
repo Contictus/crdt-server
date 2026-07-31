@@ -110,6 +110,14 @@ type Grant struct {
 	Subject string
 	// Write says whether the connection may send document updates.
 	Write bool
+	// Owner is the tenant this connection belongs to. Empty means it claims
+	// none, which is what a server without multi-tenancy grants and what a
+	// token with no owner claim gets.
+	//
+	// A document is stamped with the owner of whoever opened it first, and
+	// every later connection must match. That is the whole tenancy boundary:
+	// without it, knowing a document name is enough to open it.
+	Owner string
 }
 
 // Handler serves the WebSocket endpoint. The URL path is the document name,
@@ -256,14 +264,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	c := newConn(h.nextID.Add(1), ws, h.cfg.OutBuffer, grant.Write, cancel)
-	rm, err := h.cfg.Rooms.Join(name, c)
+	rm, err := h.cfg.Rooms.Join(name, c, grant.Owner)
 	if err != nil {
+		// A document that belongs to another tenant is refused the same way a
+		// bad token is, and with the same words. Telling the two apart would
+		// make the boundary a way to ask "does this name exist somewhere else
+		// on this server", one guess at a time.
+		if errors.Is(err, room.ErrWrongOwner) {
+			h.metrics.Denied.WithLabelValues("unauthorized").Inc()
+			h.log.Warn("refusing a connection: the document belongs to another owner",
+				"room", name, "ip", ip, "owner", grant.Owner)
+			h.reject(r.Context(), ws, errNotYours)
+			return
+		}
 		h.log.Warn("join failed", "room", name, "err", err)
 		_ = ws.Close(websocket.StatusTryAgainLater, truncateReason(err.Error()))
 		return
 	}
 
-	log := h.log.With("room", name, "conn", c.id, "ip", ip, "sub", grant.Subject, "write", grant.Write)
+	log := h.log.With("room", name, "conn", c.id, "ip", ip, "sub", grant.Subject,
+		"write", grant.Write, "owner", grant.Owner)
 	go h.writePump(c, log)
 	h.readPump(ctx, c, rm, newLimiter(h.cfg.Rate, nil), log)
 
@@ -274,6 +294,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// hijacked socket is torn down under the write pump.
 	<-c.finished
 }
+
+// errNotYours is what a client is told when the document belongs to somebody
+// else. Deliberately the same sentence a missing or wrong token produces.
+var errNotYours = errors.New("not authorized for this document")
 
 func (h *Handler) reject(ctx context.Context, ws *websocket.Conn, cause error) {
 	ctx, cancel := context.WithTimeout(ctx, h.cfg.WriteTimeout)

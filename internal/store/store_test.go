@@ -59,7 +59,7 @@ func TestLoadCreatesAnEmptyDocument(t *testing.T) {
 	c := ctx(t)
 	id := testDoc(t)
 
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestLoadCreatesAnEmptyDocument(t *testing.T) {
 
 	// Loading twice must not fail on the primary key, because every connection
 	// to a document does it.
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatalf("second load: %v", err)
 	}
 }
@@ -78,7 +78,7 @@ func TestAppendAndLoadPreservesOrder(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -98,7 +98,7 @@ func TestAppendAndLoadPreservesOrder(t *testing.T) {
 		t.Fatalf("seq did not advance: %v then %v", first, second)
 	}
 
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestCompactFoldsTheLog(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,7 +139,7 @@ func TestCompactFoldsTheLog(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestCompactKeepsUpdatesAboveTheWatermark(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -176,7 +176,7 @@ func TestCompactKeepsUpdatesAboveTheWatermark(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,7 +191,7 @@ func TestCompactRefusesToGoBackwards(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -212,7 +212,7 @@ func TestCompactRefusesToGoBackwards(t *testing.T) {
 		t.Fatalf("got %v, want ErrStaleSnapshot", err)
 	}
 
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestCompactIsAtomicForReaders(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 	folded, err := s.Append(c, id, [][]byte{[]byte("a"), []byte("b")})
@@ -244,7 +244,7 @@ func TestCompactIsAtomicForReaders(t *testing.T) {
 
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		doc, err := s.Load(c, id)
+		doc, err := s.Load(c, id, "", store.NilUUID)
 		if err != nil {
 			t.Errorf("load during compaction: %v", err)
 			break
@@ -274,7 +274,7 @@ func TestCompactOnlyDeletesTheRowsItFolded(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -293,7 +293,7 @@ func TestCompactOnlyDeletesTheRowsItFolded(t *testing.T) {
 		t.Fatalf("compact: %v", err)
 	}
 
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,13 +316,13 @@ func TestCompactWithNothingFoldedIsANoOp(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Compact(c, id, []byte("snapshot"), nil); err != nil {
 		t.Fatalf("compact: %v", err)
 	}
-	doc, err := s.Load(c, id)
+	doc, err := s.Load(c, id, "", store.NilUUID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestUpdateCount(t *testing.T) {
 	s := testStore(t)
 	c := ctx(t)
 	id := testDoc(t)
-	if _, err := s.Load(c, id); err != nil {
+	if _, err := s.Load(c, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Append(c, id, [][]byte{[]byte("a"), []byte("b")}); err != nil {
@@ -386,7 +386,7 @@ func TestDeleteRemovesTheDocumentAndItsLog(t *testing.T) {
 	ctx := context.Background()
 	id := store.DocumentID(fmt.Sprintf("delete-%d", time.Now().UnixNano()))
 
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Append(ctx, id, [][]byte{{1}, {2}}); err != nil {
@@ -423,7 +423,7 @@ func TestDeleteIdleSparesRecentlyWrittenDocuments(t *testing.T) {
 
 	// Both rows are created now, and both will be older than the cutoff.
 	for _, id := range []store.UUID{stale, active} {
-		if _, err := s.Load(ctx, id); err != nil {
+		if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 			t.Fatal(err)
 		}
 	}

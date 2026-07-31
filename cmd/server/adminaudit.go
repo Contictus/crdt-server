@@ -197,9 +197,14 @@ func requestIP(r *http.Request) string {
 func actionOf(r *http.Request) string {
 	path := r.URL.Path
 	switch {
+	case path == "/documents":
+		return actionDocumentList
 	case strings.HasPrefix(path, "/documents/"):
-		if strings.Contains(path, "/versions") {
+		switch {
+		case strings.Contains(path, "/versions"):
 			return "version.access"
+		case strings.HasSuffix(path, "/owner"):
+			return actionOwnerSet
 		}
 		return "document.access"
 	case strings.HasPrefix(path, "/debug/pprof"):
@@ -220,6 +225,8 @@ const (
 	actionDocumentRead   = "document.read"
 	actionDocumentWrite  = "document.write"
 	actionDocumentDelete = "document.delete"
+	actionDocumentList   = "document.list"
+	actionOwnerSet       = "owner.set"
 	actionVersionList    = "version.list"
 	actionVersionRead    = "version.read"
 	actionVersionTake    = "version.take"

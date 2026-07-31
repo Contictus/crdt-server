@@ -1,7 +1,14 @@
 # ycollab runbook
 
-For whoever is on call. Every command here has been run; the backup and restore
-section in particular is a transcript, not a suggestion.
+For whoever is on call. Every command here has been run against a real server
+and a real database; the backup and restore section in particular is a
+transcript, not a suggestion.
+
+Two exceptions, stated so you know what you are relying on. The `jq` filters are
+written for your machine and were composed rather than executed — the API shapes
+they read are the ones the tests assert, but the pipelines themselves are not
+transcripts. And the bulk `UPDATE` in the multi-tenancy section is deliberately
+not something this runbook ran against anything but a scratch database.
 
 ## Where the state is
 
@@ -533,3 +540,98 @@ did not know about, and that is the answer the rotation was for.
 - **Content.** Document names and byte counts only, deliberately.
 - **Successful `/metrics` scrapes**, which would be most of the file. Refused
   ones are recorded.
+
+## Multi-tenancy
+
+### Turning it on for a database that predates it
+
+Every existing document is owned by nobody. Tokens that already worked keep
+working; tokens carrying an `own` claim reach none of them. Nothing breaks and
+nothing moves on its own — which is the point, but it does mean the move is
+yours to make.
+
+1. See what is there. Documents owned by nobody are `owner=` with an empty
+   value:
+
+   ```sh
+   curl -s -H "Authorization: Bearer $TOKEN" \
+     "http://127.0.0.1:6060/documents?owner=&limit=1000"
+   ```
+
+2. Rows written before the server recorded names come back with `"name": ""`.
+   They can be read by id but not opened, because the id is a one-way hash of the
+   name. If your application knows the names, `PUT .../owner` records the name as
+   it moves the document. If it does not, the names are recoverable only from
+   your own records — the server cannot invert the hash.
+
+3. Move them one at a time, which also records the name:
+
+   ```sh
+   curl -X PUT -H "Authorization: Bearer $TOKEN" -d '{"owner":"acme"}' \
+     http://127.0.0.1:6060/documents/notes/owner
+   ```
+
+   A `409` means somebody is editing it. The room is refused rather than moved
+   under them; retry after the connections close, or after `-idle-timeout`.
+
+4. For a bulk move where every document belongs to one tenant, SQL is honest and
+   faster than a thousand requests. **Take a backup first, and do it while the
+   server is stopped** — a running replica holds owners in memory for its
+   resident rooms and will not notice:
+
+   ```sql
+   -- The owner id is a UUIDv5 of the tenant name under ycollab's owner
+   -- namespace. Get it from the server rather than deriving it by hand: open one
+   -- document as that tenant and read owner_id out of the listing.
+   UPDATE documents SET owner_id = '<the owner_id from a listing>'
+   WHERE owner_id = '00000000-0000-0000-0000-000000000000';
+   ```
+
+### Deleting everything belonging to one account
+
+Paging is keyset, so it is safe to delete as you go — rows leaving the set do not
+shift the ones after them.
+
+```sh
+after=""
+while :; do
+  page=$(curl -s -H "Authorization: Bearer $TOKEN" \
+    "http://127.0.0.1:6060/documents?owner=acme&limit=100&after=$after")
+  echo "$page" | jq -r '.documents[].name' | while read -r name; do
+    [ -n "$name" ] || continue
+    curl -s -X DELETE -H "Authorization: Bearer $TOKEN" \
+      "http://127.0.0.1:6060/documents/$name"
+  done
+  after=$(echo "$page" | jq -r '.next // empty')
+  [ -n "$after" ] || break
+done
+```
+
+A `409` on a `DELETE` means somebody is still connected to that document. Deal
+with those after the loop rather than blocking it.
+
+Every one of those deletions is in the audit trail as `document.delete`, which is
+what you show somebody who asks whether the request was carried out.
+
+### "A tenant says they cannot open their document"
+
+1. Is the refusal about tenancy at all? The client is told the same thing a bad
+   token is told, deliberately — so the client's report cannot distinguish them.
+   The server's log line can: look for `refusing a connection: the document
+   belongs to another owner`, which carries `room=`, `ip=` and `owner=`.
+2. Compare who they claim to be with who owns it:
+
+   ```sh
+   curl -s -H "Authorization: Bearer $TOKEN" \
+     "http://127.0.0.1:6060/documents?limit=1000" | jq -r '.documents[] | select(.name=="notes")'
+   ```
+
+   The `owner_id` there is the hash of the tenant name. To check a guess, open
+   any document as that tenant and compare the `owner_id` the listing reports.
+3. The usual cause is a document created before the application started sending
+   the `own` claim — it is owned by nobody, and the now-tenanted token cannot
+   reach it. `PUT .../owner` is the fix.
+4. The other cause is two tenants that genuinely want the same document name.
+   They cannot have it: names are global. Namespace them in the application
+   (`acme/notes` is not allowed — the path is the whole name — but `acme-notes`
+   is).

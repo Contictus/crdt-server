@@ -1277,6 +1277,107 @@ found it: an authorised caller poking at paths this server does not serve was
 invisible. A catch-all `/` handler, audited as `unknown`, closes it. `ServeMux`
 prefers the more specific pattern, so every real route still wins.
 
+### D114. A document belongs to whoever opened it first, and never changes hands by itself
+The alternative designs both have a hole. Assigning an owner only when a token
+carries one, and treating an unowned document as open to anybody, leaves a
+permanent gap: every row written before tenancy existed stays reachable by every
+tenant forever. Letting the first tenant to *open* an existing unowned document
+claim it turns a race into an ownership decision - whoever connects first wins,
+including somebody who guessed the name.
+
+So: creating a document stamps it, and nothing else ever changes the owner except
+an operator saying so through `PUT /documents/{name}/owner`. A deployment turning
+tenancy on finds its existing documents owned by nobody, reachable by exactly the
+tokens that already worked, and moves them deliberately.
+
+`NilUUID` is therefore a real owner rather than a placeholder, and this is the
+half people get wrong: a connection claiming no owner reaches only documents that
+have none, and a tenant does *not* inherit the documents that have none. Both
+directions are tested, because only enforcing the first would make an old
+tokenless connection a skeleton key.
+
+### D115. The tenancy check is settled once per document, not once per connection
+The obvious implementation asks the database "whose is this" on every connection.
+That is a round trip per reconnect, on the path a client waits on, for an answer
+that cannot change while the document is open.
+
+Instead the room holds the owner, settled when the document was opened. A
+resident document answers from a map lookup; only opening one costs a query. The
+comparison is over the derived owner id rather than the tenant name it came from,
+because the same tenant may be named by its slug in one token and by its UUID in
+another.
+
+That is also why `PUT .../owner` evicts the room first and refuses when somebody
+is connected. A room that kept running with a stale owner would apply the change
+on other replicas immediately and on this one whenever it happened to fall out of
+memory, and would leave the connected clients attached to a room whose owner no
+longer matches their grant.
+
+### D116. Ownership is decided by INSERT ... ON CONFLICT and a read, in one transaction
+Read-then-insert is wrong here for the reason D102 established: under READ
+COMMITTED two transactions each evaluate the read against their own snapshot,
+neither sees the other's uncommitted row, and both insert. There it cost a
+retention count. Here it would be two tenants each believing they own the same
+document.
+
+`INSERT ... ON CONFLICT DO NOTHING` followed by `SELECT owner_id`, in one
+transaction, has no such window: whoever loses the insert reads the winner's row.
+A test runs twelve goroutines at one new document against a real PostgreSQL and
+asserts they all report the same owner.
+
+### D117. The documents table needed a name column before a listing was worth anything
+`DocumentID` hashes a name into a UUID, one way. A listing built from the existing
+schema could return identifiers and nothing anybody could open, which is not a
+listing.
+
+The column is additive and `Migrate` runs `ALTER TABLE ... ADD COLUMN IF NOT
+EXISTS` on every boot, so an existing database gets it in place - verified against
+one carrying rows from earlier phases. Those rows keep an empty name: the id is a
+hash, so the server cannot recover what it was called. `PUT .../owner` records the
+name as a side effect, because that is the moment somebody is looking at the
+document and knows what it is called.
+
+The name is written on creation and never rewritten. Overwriting it on every open
+would mean taking a caller's word over the row's about which document this is.
+
+### D118. Paging is keyset, and the cursor carries the id as well as the name
+`OFFSET` skips and repeats rows when the underlying set changes, and a tenant's
+documents change while somebody pages through them. That matters more than usual
+here, because paging this listing is how "delete everything belonging to this
+account" is carried out - a skipped row is data that should have been deleted and
+was not.
+
+The cursor is `(name, id)`, not name alone: rows written before the name column
+have an empty name, and a cursor on name alone would either skip all but one of
+them or loop forever on the first.
+
+### D119. A read on the admin surface must not create the document row
+`Load` creates the row it reads, because opening a document is how a document
+comes to exist. Carrying that into the administrative read would have been a real
+defect: an operator `curl` of a name nothing had written would leave behind a row
+owned by nobody, and the tenant who later opened that name would be refused their
+own document forever.
+
+`LoadAny` therefore neither checks the owner nor creates the row. Two behaviours
+in one method is usually a smell; here it is one idea - "look, do not touch" - and
+it is a separate method rather than a flag on `Load` so that reading past the
+tenancy boundary is a call somebody can grep for, and so no call site can do it by
+leaving a parameter at its zero value.
+
+### D120. The refusal is the same one a bad token gets
+A client refused because a document belongs to another tenant is told exactly what
+a client with no token is told, in the same words, with the same close code.
+
+Distinguishing them would turn the boundary into an oracle: a caller could ask
+"does a document called X exist somewhere on this server" one guess at a time, and
+document names are often meaningful - a customer name, a project, a deal. The
+information the operator needs is in the log line and the metric, where the client
+cannot see it.
+
+The hole this had, found by a test: the check lived on the non-resident restore
+path only, so a cross-tenant `POST /documents/{name}` succeeded for exactly the
+documents somebody was editing at the time. Enforcement now sits on both paths.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

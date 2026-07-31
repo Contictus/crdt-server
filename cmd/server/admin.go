@@ -159,6 +159,8 @@ func startAdmin(addr, token string, withPprof bool, rec *audit.Recorder, registr
 		// History needs a database by definition, so these are registered only
 		// when there is one. Without it the routes are absent and a caller gets
 		// a 404 that means "not on this server" rather than a 500 later.
+		mux.HandleFunc("GET /documents", auditedFunc(rec, actionDocumentList, listDocuments(manager, documents, log)))
+		mux.HandleFunc("PUT /documents/{name}/owner", auditedFunc(rec, actionOwnerSet, setOwner(manager, documents, log)))
 		mux.HandleFunc("GET /documents/{name}/versions", auditedFunc(rec, actionVersionList, listVersions(documents, log)))
 		mux.HandleFunc("GET /documents/{name}/versions/{id}", auditedFunc(rec, actionVersionRead, getVersion(documents, log)))
 		mux.HandleFunc("POST /documents/{name}/versions", auditedFunc(rec, actionVersionTake, takeVersion(manager, documents, log)))

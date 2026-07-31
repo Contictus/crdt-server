@@ -24,7 +24,7 @@ import (
 func TestConcurrentReplicasWriteOneVersion(t *testing.T) {
 	s, ctx := openStore(t)
 	id := store.DocumentID(fmt.Sprintf("versions-race-%d", time.Now().UnixNano()))
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestConcurrentReplicasWriteOneVersion(t *testing.T) {
 func TestSaveVersionTakesTheDocumentLock(t *testing.T) {
 	s, ctx := openStore(t)
 	id := store.DocumentID(fmt.Sprintf("versions-lock-%d", time.Now().UnixNano()))
-	if _, err := s.Load(ctx, id); err != nil {
+	if _, err := s.Load(ctx, id, "", store.NilUUID); err != nil {
 		t.Fatal(err)
 	}
 

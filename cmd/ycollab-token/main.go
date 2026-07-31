@@ -35,6 +35,7 @@ func run() error {
 		doc     = flag.String("doc", "", "document name the token is for (required)")
 		perm    = flag.String("perm", "write", "read or write")
 		subject = flag.String("sub", "", "who the token is for; appears in the server's logs")
+		owner   = flag.String("own", "", "tenant the token belongs to; empty reaches only documents that have no owner")
 		ttl     = flag.Duration("ttl", time.Hour, "how long the token is valid")
 		wsURL   = flag.String("url", "", "if given, print a ready-to-use WebSocket URL instead of the bare token")
 		genKey  = flag.Bool("gen-secret", false, "print a new random secret and exit")
@@ -72,6 +73,7 @@ func run() error {
 		},
 		Doc:  *doc,
 		Perm: permission,
+		Own:  *owner,
 	})
 	if err != nil {
 		return err

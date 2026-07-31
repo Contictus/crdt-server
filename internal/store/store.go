@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -53,21 +54,65 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return nil
 }
 
-// Ensure creates the document row if it is not there, so that a caller which
-// writes to the log without reading the document first does not trip the
-// foreign key.
+// ErrWrongOwner means the document exists and belongs to somebody else. It is
+// deliberately not "no such document": the caller is asking about a name it is
+// not entitled to, and the two answers have to be told apart inside the server
+// even though callers outside it are told the same thing either way.
+var ErrWrongOwner = errors.New("store: the document belongs to another owner")
+
+// Ensure creates the document row if it is not there, and reports who owns it.
 //
-// Restoring into a document that was just deleted, or into a database that has
-// never heard of it, is exactly that case - and it is the disaster-recovery
-// path, so it has to work without a read first.
-func (s *Store) Ensure(ctx context.Context, id UUID) error {
-	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO documents (id, owner_id) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-		id, NilUUID,
-	); err != nil {
-		return fmt.Errorf("store: ensure document: %w", err)
+// Two callers need this. One writes to the log without reading the document
+// first - restoring into a document that was just deleted, or into a database
+// that has never heard of it, which is the disaster-recovery path and has to
+// work. The other is opening a document at all: the row's owner is the
+// authority on who may, and it is decided here, in the same statement that
+// creates the row, so there is no window between "does it exist" and "whose is
+// it".
+//
+// name is recorded on creation and never changed afterwards. The id is derived
+// from the name by a one-way hash, so a row without one can be loaded but not
+// listed; rewriting it on every open would let a hash collision rename somebody
+// else's document.
+func (s *Store) Ensure(ctx context.Context, id UUID, name string, owner UUID) (UUID, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return NilUUID, fmt.Errorf("store: ensure document: %w", err)
 	}
-	return nil
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	found, err := ensureIn(ctx, tx, id, name, owner)
+	if err != nil {
+		return NilUUID, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return NilUUID, fmt.Errorf("store: ensure document: %w", err)
+	}
+	return found, nil
+}
+
+// ensureIn is the insert-then-read both Ensure and Load do, in whatever
+// transaction the caller already has.
+//
+// ON CONFLICT DO NOTHING followed by a SELECT in one transaction is what makes
+// the answer trustworthy: two connections racing to create the same document
+// both end up reading the row one of them inserted, and both learn the same
+// owner. Reading first and inserting after would let both see nothing and both
+// insert their own owner - which under READ COMMITTED is the same shape of bug
+// as D102, and here it would be a tenancy boundary rather than a retention
+// count.
+func ensureIn(ctx context.Context, tx pgx.Tx, id UUID, name string, owner UUID) (UUID, error) {
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO documents (id, owner_id, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
+		id, owner, name,
+	); err != nil {
+		return NilUUID, fmt.Errorf("store: ensure document: %w", err)
+	}
+	var found UUID
+	if err := tx.QueryRow(ctx, `SELECT owner_id FROM documents WHERE id = $1`, id).Scan(&found); err != nil {
+		return NilUUID, fmt.Errorf("store: read owner: %w", err)
+	}
+	return found, nil
 }
 
 // A Document is what was on disk: a snapshot, possibly empty, and the log rows
@@ -86,6 +131,10 @@ type Document struct {
 	Seqs []int64
 	// LastSeq is the highest seq read, or SnapshotSeq if the log was empty.
 	LastSeq int64
+	// Owner is the row's owner_id, which the caller has already been checked
+	// against - it is here so a room can answer later connections from memory
+	// rather than asking the database again.
+	Owner UUID
 }
 
 // Load reads a document, creating its row if this is the first time anyone has
@@ -98,7 +147,29 @@ type Document struct {
 // `seq > snapshot_seq` instead would turn a row that committed out of seq order
 // into silent data loss, which is possible because identity values are handed
 // out before commit. See DECISIONS D35.
-func (s *Store) Load(ctx context.Context, id UUID) (*Document, error) {
+func (s *Store) Load(ctx context.Context, id UUID, name string, owner UUID) (*Document, error) {
+	return s.load(ctx, id, name, owner, false)
+}
+
+// LoadAny reads a document without checking who owns it, and without creating
+// it.
+//
+// Two differences from Load, both deliberate. It is above the tenancy boundary,
+// for the administrative surface, which serves an operator rather than a tenant
+// and can already delete any document; it is a separate method rather than a
+// flag so that reading past the boundary is a call somebody can grep for, and so
+// no call site can do it by leaving a parameter at its zero value.
+//
+// And it never creates the row. Load creates one because opening a document is
+// how a document comes to exist. A read is not: a read of a name nothing has
+// written would otherwise leave behind a row owned by nobody, and a tenant who
+// later opened that name would be refused their own document forever by a row
+// an operator's `curl` created.
+func (s *Store) LoadAny(ctx context.Context, id UUID) (*Document, error) {
+	return s.load(ctx, id, "", NilUUID, true)
+}
+
+func (s *Store) load(ctx context.Context, id UUID, name string, owner UUID, any bool) (*Document, error) {
 	doc := &Document{}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -106,16 +177,26 @@ func (s *Store) Load(ctx context.Context, id UUID) (*Document, error) {
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO documents (id, owner_id) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`,
-		id, NilUUID,
-	); err != nil {
-		return nil, fmt.Errorf("store: ensure document: %w", err)
+	if !any {
+		found, err := ensureIn(ctx, tx, id, name, owner)
+		if err != nil {
+			return nil, err
+		}
+		if found != owner {
+			return nil, fmt.Errorf("%w: %s", ErrWrongOwner, name)
+		}
+		doc.Owner = found
 	}
 
 	if err := tx.QueryRow(ctx,
-		`SELECT snapshot, snapshot_seq FROM documents WHERE id = $1`, id,
-	).Scan(&doc.Snapshot, &doc.SnapshotSeq); err != nil {
+		`SELECT snapshot, snapshot_seq, owner_id FROM documents WHERE id = $1`, id,
+	).Scan(&doc.Snapshot, &doc.SnapshotSeq, &doc.Owner); err != nil {
+		if any && errors.Is(err, pgx.ErrNoRows) {
+			// Nothing here, and nothing created. The caller turns this into
+			// "no such document"; an empty Document would be a lie that reads
+			// as an empty one.
+			return &Document{}, nil
+		}
 		return nil, fmt.Errorf("store: read document: %w", err)
 	}
 	doc.LastSeq = doc.SnapshotSeq

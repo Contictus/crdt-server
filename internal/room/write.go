@@ -72,6 +72,15 @@ type MergeConfig struct {
 	// reloads the document.
 	Bus    cluster.Bus
 	NodeID uint64
+	// Owner is the tenant a newly created document is stamped with. Empty
+	// leaves it owned by nobody, which is right for a server without tenancy
+	// and for a restore where the operator did not say.
+	//
+	// It is also checked: restoring into a document that already belongs to
+	// somebody else with an Owner set is refused. A restore is a blunt
+	// instrument on an operator surface, and writing one tenant's bytes into
+	// another's document should take more than a typo in a URL.
+	Owner string
 }
 
 // Import merges an update into a document that no room on this node holds.
@@ -92,8 +101,12 @@ func Import(ctx context.Context, cfg MergeConfig, name string, update []byte) er
 	// never heard of this name is the disaster-recovery case, and it is the one
 	// that must not need a read first.
 	id := store.DocumentID(name)
-	if err := cfg.Store.Ensure(ctx, id); err != nil {
+	owner, err := cfg.Store.Ensure(ctx, id, name, store.OwnerID(cfg.Owner))
+	if err != nil {
 		return err
+	}
+	if cfg.Owner != "" && owner != store.OwnerID(cfg.Owner) {
+		return fmt.Errorf("%w: %s", store.ErrWrongOwner, name)
 	}
 	if _, err := cfg.Store.Append(ctx, id, [][]byte{update}); err != nil {
 		return fmt.Errorf("append: %w", err)

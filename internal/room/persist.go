@@ -13,11 +13,19 @@ import (
 // the room's own tests can run without a database; the integration tests use the
 // real thing.
 type Persistence interface {
-	Load(ctx context.Context, id store.UUID) (*store.Document, error)
-	// Ensure creates the document row. Only Import needs it - Load creates the
-	// row as a side effect of reading - but a restore writes to the log
-	// without reading first, and the log's foreign key wants a parent.
-	Ensure(ctx context.Context, id store.UUID) error
+	// Load reads the document for a connection that claims owner, creating the
+	// row if this is the first time anybody asked. It refuses with
+	// store.ErrWrongOwner if the row exists and belongs to somebody else.
+	Load(ctx context.Context, id store.UUID, name string, owner store.UUID) (*store.Document, error)
+	// LoadAny reads without checking the owner and without creating the row.
+	// It is for the administrative surface, which is above tenancy; every call
+	// site is on that listener and is audited.
+	LoadAny(ctx context.Context, id store.UUID) (*store.Document, error)
+	// Ensure creates the document row and reports who owns it. Import needs it
+	// because a restore writes to the log without reading first, and the log's
+	// foreign key wants a parent; the manager needs it to settle who may open a
+	// document before a room exists.
+	Ensure(ctx context.Context, id store.UUID, name string, owner store.UUID) (store.UUID, error)
 	Append(ctx context.Context, id store.UUID, payloads [][]byte) ([]int64, error)
 	Compact(ctx context.Context, id store.UUID, snapshot []byte, folded []int64) error
 }
@@ -66,7 +74,7 @@ type persistJob struct {
 // row that is still there.
 func (r *Room) load(ctx context.Context) error {
 	started := time.Now()
-	doc, err := r.cfg.Store.Load(ctx, r.docID)
+	doc, err := r.cfg.Store.Load(ctx, r.docID, r.cfg.Name, r.owner)
 	if err != nil {
 		r.metrics.StoreFailed.WithLabelValues("load").Inc()
 		return err
