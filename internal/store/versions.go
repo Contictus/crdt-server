@@ -92,20 +92,41 @@ func (s *Store) SaveVersion(ctx context.Context, id UUID, v Version, minAge time
 	// worth compressing.
 	packed, codec := pack.Pack(v.Payload)
 	s.observePack(len(v.Payload), len(packed))
+
+	// The object first, the row second, for the reason in blobs.go. The insert
+	// below may decide this version says nothing new and write no row at all, in
+	// which case the object is an orphan and is deleted straight away - nothing
+	// ever named it.
+	key, err := s.putVersionBlob(ctx, id, packed)
+	if err != nil {
+		return false, err
+	}
+	if key != "" {
+		// Empty rather than nil: payload is NOT NULL, and the constraint is
+		// worth keeping - a version row with no payload and no key would be a
+		// version that says nothing, which is not a thing this table should be
+		// able to hold.
+		packed = []byte{}
+	}
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO doc_versions (doc_id, state_vector, payload, label, codec)
-		 SELECT $1, $2, $3, $4, $6
+		`INSERT INTO doc_versions (doc_id, state_vector, payload, label, codec, blob_key)
+		 SELECT $1, $2, $3, $4, $6, $7
 		  WHERE EXISTS (SELECT 1 FROM documents WHERE id = $1)
 		    AND NOT EXISTS (
 		          SELECT 1 FROM doc_versions v
 		           WHERE v.doc_id = $1
 		             AND (v.created_at > now() - $5::interval OR v.state_vector = $2)
 		             AND v.id = (SELECT max(id) FROM doc_versions WHERE doc_id = $1))`,
-		id, v.StateVector, packed, v.Label, minAge, codec)
+		id, v.StateVector, packed, v.Label, minAge, codec, key)
 	if err != nil {
+		s.dropBlob(ctx, key)
 		return false, fmt.Errorf("store: save version: %w", err)
 	}
 	written := tag.RowsAffected() > 0
+	if !written {
+		// This version said nothing new, so no row names the object.
+		s.dropBlob(ctx, key)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("store: save version: %w", err)
 	}
@@ -147,18 +168,19 @@ func (s *Store) ListVersions(ctx context.Context, id UUID, limit int) ([]Version
 func (s *Store) LoadVersion(ctx context.Context, id UUID, version int64) (*Version, error) {
 	v := &Version{ID: version}
 	var codec pack.Codec
+	var key string
 	err := s.pool.QueryRow(ctx,
-		`SELECT created_at, state_vector, label, payload, codec
+		`SELECT created_at, state_vector, label, payload, codec, blob_key
 		   FROM doc_versions WHERE doc_id = $1 AND id = $2`,
 		id, version,
-	).Scan(&v.CreatedAt, &v.StateVector, &v.Label, &v.Payload, &codec)
+	).Scan(&v.CreatedAt, &v.StateVector, &v.Label, &v.Payload, &codec, &key)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoVersion
 		}
 		return nil, fmt.Errorf("store: load version: %w", err)
 	}
-	if v.Payload, err = pack.Unpack(v.Payload, codec); err != nil {
+	if v.Payload, err = s.readBlob(ctx, key, v.Payload, codec); err != nil {
 		return nil, fmt.Errorf("store: load version: %w", err)
 	}
 	v.Bytes = len(v.Payload)
@@ -176,16 +198,39 @@ func (s *Store) PruneVersions(ctx context.Context, id UUID, keep int) (int64, er
 	if keep <= 0 {
 		return 0, nil
 	}
-	tag, err := s.pool.Exec(ctx,
+	// RETURNING names the objects the deleted rows owned, in the same statement
+	// that removes them - so the set is exactly what went, with no second query
+	// that could see a different answer.
+	rows, err := s.pool.Query(ctx,
 		`DELETE FROM doc_versions
 		  WHERE doc_id = $1
 		    AND id NOT IN (
-		          SELECT id FROM doc_versions WHERE doc_id = $1 ORDER BY id DESC LIMIT $2)`,
+		          SELECT id FROM doc_versions WHERE doc_id = $1 ORDER BY id DESC LIMIT $2)
+		RETURNING blob_key`,
 		id, keep)
 	if err != nil {
 		return 0, fmt.Errorf("store: prune versions: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	var n int64
+	var keys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("store: prune versions: %w", err)
+		}
+		n++
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: prune versions: %w", err)
+	}
+	// Rows first, objects second: see blobs.go.
+	s.dropBlobs(ctx, keys)
+	return n, nil
 }
 
 // VersionCount reports how many versions a document has.

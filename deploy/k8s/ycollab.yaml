@@ -138,6 +138,28 @@ spec:
             # mount a volume for it: a file inside the container dies with it.
             - name: YCOLLAB_AUDIT_LOG
               value: "-"
+            # Snapshots and version payloads in object storage instead of in
+            # PostgreSQL. History is a whole document per version, twenty-four
+            # per document by default, so this is the difference between a
+            # database holding terabytes of blobs it never queries and one
+            # holding rows.
+            #
+            #   - name: YCOLLAB_S3_BUCKET
+            #     value: "ycollab"
+            #   - name: YCOLLAB_S3_REGION
+            #     value: "eu-west-1"
+            #   - name: YCOLLAB_S3_PREFIX
+            #     value: "prod/"
+            #   - name: AWS_ACCESS_KEY_ID
+            #     valueFrom: { secretKeyRef: { name: ycollab, key: s3-access-key } }
+            #   - name: AWS_SECRET_ACCESS_KEY
+            #     valueFrom: { secretKeyRef: { name: ycollab, key: s3-secret-key } }
+            #
+            # A Secret, not a service account annotation: the client here signs
+            # with SigV4 directly and does not implement IRSA. And note that a
+            # pg_dump stops being a backup once this is on - the rows name
+            # objects. Back up both, or rely on the bucket's own versioning.
+            #
             # Multi-tenancy is a property of the tokens, not of a flag here: put
             # an "own" claim in them (or return "owner" from -auth-url) and a
             # document becomes reachable only by the tenant that opened it.

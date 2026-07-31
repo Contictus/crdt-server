@@ -28,6 +28,7 @@ import (
 	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/mesutokul/ycollab/internal/auth"
+	"github.com/mesutokul/ycollab/internal/blob"
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/gateway"
 	"github.com/mesutokul/ycollab/internal/hook"
@@ -60,6 +61,15 @@ func run() error {
 		flushInterval = flag.Duration("flush-interval", room.DefaultFlushInterval, "how long an update may sit in memory before it is written")
 		durableWrites = flag.Bool("durable-writes", false, "write every update to the database before relaying it; removes the flush window at the cost of a round trip per update")
 		retention     = flag.Duration("retention", 0, "delete documents nothing has touched for this long; 0 keeps them forever")
+
+		s3Bucket    = flag.String("s3-bucket", os.Getenv("YCOLLAB_S3_BUCKET"), "keep snapshots and version payloads in this S3 bucket instead of in the database; empty keeps them in PostgreSQL")
+		s3Region    = flag.String("s3-region", envOr("YCOLLAB_S3_REGION", "us-east-1"), "region for the S3 signature; services that have no regions accept the default")
+		s3Endpoint  = flag.String("s3-endpoint", os.Getenv("YCOLLAB_S3_ENDPOINT"), "address of an S3-compatible service - MinIO, R2, Backblaze, Ceph. Empty means AWS")
+		s3Prefix    = flag.String("s3-prefix", os.Getenv("YCOLLAB_S3_PREFIX"), "namespace every object key with this, so one bucket can hold more than one deployment")
+		s3AccessKey = flag.String("s3-access-key", os.Getenv("YCOLLAB_S3_ACCESS_KEY"), "access key id; empty falls back to AWS_ACCESS_KEY_ID")
+		s3SecretKey = flag.String("s3-secret-key", os.Getenv("YCOLLAB_S3_SECRET_KEY"), "secret access key; empty falls back to AWS_SECRET_ACCESS_KEY")
+		s3PathStyle = flag.Bool("s3-path-style", false, "address objects as endpoint/bucket/key on AWS too; forced on for a custom endpoint")
+		s3Timeout   = flag.Duration("s3-timeout", blob.DefaultTimeout, "how long one object storage request may take")
 
 		versionInterval = flag.Duration("version-interval", 0, "keep a version of each changed document this often; 0 keeps only the versions asked for through the API")
 		versionKeep     = flag.Int("version-keep", room.DefaultVersionKeep, "versions to keep per document; negative keeps every one, which is unbounded storage")
@@ -141,6 +151,28 @@ func run() error {
 		}
 		defer db.Close()
 		db.SetMetrics(collectors)
+
+		if *s3Bucket != "" {
+			objects, err := blob.New(blob.Config{
+				Bucket:    *s3Bucket,
+				Region:    *s3Region,
+				Endpoint:  *s3Endpoint,
+				Prefix:    *s3Prefix,
+				PathStyle: *s3PathStyle,
+				Timeout:   *s3Timeout,
+				Credentials: blob.Credentials{
+					AccessKeyID:     *s3AccessKey,
+					SecretAccessKey: *s3SecretKey,
+					SessionToken:    os.Getenv("AWS_SESSION_TOKEN"),
+				},
+			})
+			if err != nil {
+				return err
+			}
+			db.UseBlobs(objects, log)
+			log.Info("keeping snapshots and versions in object storage",
+				"bucket", *s3Bucket, "endpoint", *s3Endpoint, "prefix", *s3Prefix)
+		}
 		if err := db.Migrate(context.Background()); err != nil {
 			return err
 		}

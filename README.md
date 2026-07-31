@@ -222,6 +222,49 @@ rate(ycollab_store_blob_bytes_total{state="raw"}[1h])
   / rate(ycollab_store_blob_bytes_total{state="stored"}[1h])
 ```
 
+### Object storage
+
+`-s3-bucket` moves snapshots and version payloads out of PostgreSQL. Everything
+that is *queried* stays in the database — the document row, the owner, the name,
+the sequence numbers, the state vectors, the update log. What moves is what is
+only ever read whole, by primary key, and never joined against anything.
+
+```sh
+ycollab -database-url ...   -s3-bucket ycollab -s3-region eu-west-1   -s3-access-key ... -s3-secret-key ...
+
+# Anything that speaks S3: MinIO, R2, Backblaze, Ceph.
+ycollab ... -s3-bucket ycollab -s3-endpoint http://minio:9000 -s3-prefix prod/
+```
+
+The reason is history. A version is a whole document and the default is
+twenty-four per document; at scale that is a database holding terabytes of blobs
+it never queries, with the vacuum pressure and backup times that implies.
+
+**Turning it on migrates nothing.** Each row says where its own bytes are, so a
+database can hold both kinds at once: rows written before are read from their
+columns, rows written after from the bucket. Turning it off again leaves the
+objects readable — but a server with no bucket configured that meets a row naming
+one fails loudly rather than serving an empty document, which would look like a
+document somebody had emptied.
+
+**The order of operations is the correctness argument.** Writing: the object
+first, then the row. Deleting: the row first, then the object. Either way a
+failure in between leaves an object nothing points at — wasted storage — rather
+than a row pointing at bytes that are not there, which is a document that cannot
+be read. Orphans are bounded and the runbook says how to find them.
+
+A snapshot's key contains its sequence number. Two replicas compacting the same
+document at once therefore write two different objects, and the row decides which
+one counts; a shared key could have left the loser's bytes under the winner's row.
+
+**What this client does not do**, because it is 450 lines of SigV4 and HTTP rather
+than an SDK: no IRSA, no EC2 instance roles, no SSO, no shared config file. Keys
+come from the flags or from `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_SESSION_TOKEN` — on Kubernetes, a Secret rather than a service account
+annotation. No multipart upload, so a single object is capped at S3's 5 GB. The
+signing is checked against a real MinIO in the test suite, not against a mock that
+would agree with its own mistakes.
+
 ### The audit trail
 
 The admin listener can read, overwrite and delete every document, so what happens on it is
@@ -653,12 +696,19 @@ two tabs can be compared at a glance.
 go test ./... -race
 ```
 
-The store and the crash-recovery tests need a database and skip without one:
+Some tests need real infrastructure and skip without it. All three come up together:
 
 ```sh
 docker compose -f deploy/docker-compose.yml up -d
-YCOLLAB_TEST_DATABASE_URL=postgres://ycollab:ycollab@127.0.0.1:5433/ycollab go test ./... -race
+docker exec deploy-minio-1 mc alias set local http://127.0.0.1:9000 ycollab ycollab-secret
+docker exec deploy-minio-1 mc mb --ignore-existing local/ycollab
+
+YCOLLAB_TEST_DATABASE_URL=postgres://ycollab:ycollab@127.0.0.1:5433/ycollab YCOLLAB_TEST_REDIS_URL=redis://127.0.0.1:6380 YCOLLAB_TEST_S3_ENDPOINT=http://127.0.0.1:9002   go test ./... -race
 ```
+
+MinIO is there so the hand-rolled SigV4 signer is checked against a real S3
+implementation rather than a mock that would agree with its own mistakes — one of
+those tests signs with a deliberately wrong secret to prove MinIO is checking.
 
 Those tests build the server, kill the process outright, restart it and reconnect, because a
 graceful shutdown gets to flush and a crash does not.

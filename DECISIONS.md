@@ -1434,6 +1434,87 @@ A storage layer that can grow a document by storing it is a storage layer with a
 surprising bill, and the surprise would land on exactly the documents that are
 already the most expensive.
 
+### D124. SigV4 is written out, and what that costs is stated rather than discovered
+Asked and answered: hand-rolled, no dependency. `go.mod` keeps six direct
+requirements instead of gaining four and about fifteen indirect ones, which is in
+character for a project whose CRDT engine, lib0 codec and UUID handling are all
+written out.
+
+The surface actually needed is four requests. The signing is about 200 lines and
+the client about 250. It was accepted by a real MinIO on the first attempt,
+including keys containing spaces, unicode, `%25`, `&` and `?` - and a test signs
+with a deliberately wrong secret to prove MinIO is checking rather than waving
+things through.
+
+The failure mode is what makes this defensible. A signature that is wrong is
+refused with 403 by every request, immediately. It cannot be subtly wrong in a way
+that works today and leaks tomorrow.
+
+What it costs, in the README rather than in a footnote: no IRSA, no EC2 instance
+roles, no SSO, no shared config file, no multipart upload, no presigning.
+Credentials come from flags or the three environment variables every S3 tool
+honours. A deployment that needs an instance role needs an SDK, and the `Blobs`
+interface is three methods wide so that swap is small.
+
+Rejected: `aws-sdk-go-v2`, for the dependency weight. Rejected: `minio-go`, which
+was the reasonable middle and would have been the choice if the surface were
+larger than four verbs.
+
+### D125. Object first then row on the way in, row first then object on the way out
+This is the whole correctness argument for splitting a document across two
+systems, and it is one sentence: **an orphan is a bill, a dangling pointer is data
+loss.**
+
+Writing the row first and the object second would mean a failure in between
+leaves a row naming bytes that are not there - a document that cannot be read,
+found later by whoever tries. Writing the object first means the same failure
+leaves an object nothing points at, which costs storage and nothing else.
+
+Deleting is the mirror. Row first: a failure leaves an orphan. Object first: a
+failure leaves a version that has quietly become unreadable.
+
+Both directions are tested by making a put fail on demand, and both were checked
+by reversing them and watching the tests go red.
+
+Orphans are therefore possible by design. They are bounded - a snapshot key
+contains its sequence number, a version key is written once - so nothing
+accumulates while the server is working.
+
+### D126. A snapshot's key contains its sequence number
+The obvious key is `snapshots/<document>`, overwritten each time. It is wrong as
+soon as there are two replicas.
+
+Compaction already guards against an older snapshot beating a newer one: an
+advisory lock serialises the transaction and the write only lands if it moves
+`snapshot_seq` forward ([C2]). But the object write happens *outside* that lock -
+it has to, or every replica compacting a document would queue behind a network
+round trip. So two replicas can both write the object, and with one shared key the
+loser's bytes could be the ones left behind, sitting under a row that says they
+are the winner's.
+
+A key per sequence number makes the row and the object it names always agree. The
+loser's object is an orphan, and the one case where an orphan can be collected
+immediately - no row ever named it, so it is dropped as soon as the update
+reports `ErrStaleSnapshot`.
+
+The superseded object is deleted after the commit, never before: a crash in
+between leaves an orphan, and the other order would leave the live row naming
+bytes that had already gone.
+
+### D127. Where the bytes are is a column, not a server-wide mode
+`snapshot_key` and `blob_key` are empty when the bytes are in the column beside
+them and set when they are an object. That is per row, so one database holds both.
+
+A mode switch would have meant a migration before object storage could be turned
+on, and a second one to turn it off - which is exactly the shape of change nobody
+wants to attempt on a database holding customer documents. As it stands, turning
+it on changes where the *next* write goes and nothing else, and the rows written
+before are read by the same query that reads the new ones.
+
+The one case that must not be silent: a server with no bucket configured meeting a
+row that names one. That is an error saying so, because the alternative - an empty
+document - reads exactly like a document somebody had emptied.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

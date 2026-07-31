@@ -11,6 +11,8 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -30,6 +32,10 @@ var ErrStaleSnapshot = errors.New("store: a newer snapshot already exists")
 // A Store is the database. It is safe for concurrent use.
 type Store struct {
 	pool *pgxpool.Pool
+	// blobs is object storage, nil when snapshots and versions live in the
+	// database. See blobs.go.
+	blobs Blobs
+	log   *slog.Logger
 	// metric is where compression is reported. Never nil after Open: a set
 	// registered nowhere costs two atomic adds, which is cheaper than a nil
 	// check at every call site and impossible to forget.
@@ -64,7 +70,11 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
-	return &Store{pool: pool, metric: metrics.Nop()}, nil
+	return &Store{
+		pool:   pool,
+		metric: metrics.Nop(),
+		log:    slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+	}, nil
 }
 
 // Close releases the pool.
@@ -214,9 +224,10 @@ func (s *Store) load(ctx context.Context, id UUID, name string, owner UUID, any 
 	}
 
 	var codec pack.Codec
+	var key string
 	if err := tx.QueryRow(ctx,
-		`SELECT snapshot, snapshot_codec, snapshot_seq, owner_id FROM documents WHERE id = $1`, id,
-	).Scan(&doc.Snapshot, &codec, &doc.SnapshotSeq, &doc.Owner); err != nil {
+		`SELECT snapshot, snapshot_codec, snapshot_key, snapshot_seq, owner_id FROM documents WHERE id = $1`, id,
+	).Scan(&doc.Snapshot, &codec, &key, &doc.SnapshotSeq, &doc.Owner); err != nil {
 		if any && errors.Is(err, pgx.ErrNoRows) {
 			// Nothing here, and nothing created. The caller turns this into
 			// "no such document"; an empty Document would be a lie that reads
@@ -225,8 +236,8 @@ func (s *Store) load(ctx context.Context, id UUID, name string, owner UUID, any 
 		}
 		return nil, fmt.Errorf("store: read document: %w", err)
 	}
-	if doc.Snapshot != nil {
-		if doc.Snapshot, err = pack.Unpack(doc.Snapshot, codec); err != nil {
+	if doc.Snapshot != nil || key != "" {
+		if doc.Snapshot, err = s.readBlob(ctx, key, doc.Snapshot, codec); err != nil {
 			return nil, fmt.Errorf("store: read snapshot: %w", err)
 		}
 	}
@@ -345,15 +356,50 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 	// because a keystroke is smaller than deflate's own header.
 	packed, codec := pack.Pack(snapshot)
 	s.observePack(len(snapshot), len(packed))
+
+	// The object goes first, and the row that names it second. The other order
+	// would put a row pointing at bytes that are not there in front of every
+	// future reader of this document; this order leaves, at worst, an object
+	// nothing points at. See blobs.go.
+	//
+	// It is written before the transaction below rather than inside it, because
+	// an object write is a network round trip and holding the document's
+	// advisory lock across one would block every other replica compacting it.
+	// The key carries the sequence number, so two replicas racing here write two
+	// different objects and the row decides which one counts.
+	key, err := s.putBlob(ctx, snapshotKey(id, watermark), packed)
+	if err != nil {
+		return fmt.Errorf("store: write snapshot: %w", err)
+	}
+	if key != "" {
+		// The bytes are in the object; the column holds nothing.
+		packed = nil
+	}
+
+	// The snapshot this one replaces, read under the lock so it is the one this
+	// transaction is actually superseding. Its object is deleted after the
+	// commit: before it, a crash in between would leave the row naming an object
+	// that had already gone.
+	var superseded string
+	if err := tx.QueryRow(ctx,
+		`SELECT snapshot_key FROM documents WHERE id = $1`, id).Scan(&superseded); err != nil {
+		return fmt.Errorf("store: read the previous snapshot key: %w", err)
+	}
+
 	tag, err := tx.Exec(ctx,
 		`UPDATE documents
-		    SET snapshot = $2, snapshot_codec = $4, snapshot_seq = $3, updated_at = now()
+		    SET snapshot = $2, snapshot_codec = $4, snapshot_key = $5,
+		        snapshot_seq = $3, updated_at = now()
 		  WHERE id = $1 AND snapshot_seq < $3`,
-		id, packed, watermark, codec)
+		id, packed, watermark, codec, key)
 	if err != nil {
 		return fmt.Errorf("store: write snapshot: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		// Somebody else got there with a newer snapshot. Our object is now an
+		// orphan, and this is the one case where it can be cleaned up at once:
+		// no row ever named it.
+		s.dropBlob(ctx, key)
 		return ErrStaleSnapshot
 	}
 
@@ -366,7 +412,15 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		// The object we wrote is now an orphan: nothing committed names it.
+		s.dropBlob(ctx, key)
 		return fmt.Errorf("store: compact: %w", err)
+	}
+	// The row now names the new object, so the old one is safe to remove. After
+	// the commit, never before: a crash in between leaves an orphan, and the
+	// other order would leave the row naming bytes that had already gone.
+	if superseded != "" && superseded != key {
+		s.dropBlob(ctx, superseded)
 	}
 	return nil
 }
@@ -378,11 +432,23 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 // to have stopped serving the document first: nothing here prevents a resident
 // room from writing a snapshot afterwards and bringing it back.
 func (s *Store) Delete(ctx context.Context, id UUID) (bool, error) {
+	// The keys are collected before the rows go, because after the cascade
+	// nothing remembers which objects this document owned.
+	keys, err := s.blobKeysFor(ctx, id)
+	if err != nil {
+		return false, err
+	}
 	tag, err := s.pool.Exec(ctx, `DELETE FROM documents WHERE id = $1`, id)
 	if err != nil {
 		return false, fmt.Errorf("store: delete: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	// Rows first, objects second. A failure here leaves orphans, which cost
+	// storage; the other order would leave rows naming bytes that had gone.
+	s.dropBlobs(ctx, keys)
+	return true, nil
 }
 
 // DeleteIdle removes documents that have seen no activity since before, and
@@ -399,17 +465,65 @@ func (s *Store) Delete(ctx context.Context, id UUID) (bool, error) {
 // touched for days, and why the interval is a deployment's decision rather than
 // a default.
 func (s *Store) DeleteIdle(ctx context.Context, before time.Time) (int64, error) {
-	tag, err := s.pool.Exec(ctx,
+	// RETURNING gathers the objects to drop in the same statement that removes
+	// the rows, so nothing has to be listed first and then re-found. The version
+	// rows go by cascade and are collected separately, before the delete.
+	var versionKeys []string
+	if s.blobs != nil {
+		rows, err := s.pool.Query(ctx,
+			`SELECT v.blob_key FROM doc_versions v JOIN documents d ON d.id = v.doc_id
+			  WHERE v.blob_key <> '' AND d.updated_at < $1
+			    AND NOT EXISTS (
+			          SELECT 1 FROM doc_updates u
+			           WHERE u.doc_id = d.id AND u.created_at >= $1)`, before)
+		if err != nil {
+			return 0, fmt.Errorf("store: delete idle: %w", err)
+		}
+		for rows.Next() {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				rows.Close()
+				return 0, fmt.Errorf("store: delete idle: %w", err)
+			}
+			versionKeys = append(versionKeys, key)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return 0, fmt.Errorf("store: delete idle: %w", err)
+		}
+	}
+
+	rows, err := s.pool.Query(ctx,
 		`DELETE FROM documents d
 		  WHERE d.updated_at < $1
 		    AND NOT EXISTS (
 		          SELECT 1 FROM doc_updates u
-		           WHERE u.doc_id = d.id AND u.created_at >= $1)`,
+		           WHERE u.doc_id = d.id AND u.created_at >= $1)
+		RETURNING d.snapshot_key`,
 		before)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete idle: %w", err)
 	}
-	return tag.RowsAffected(), nil
+	var n int64
+	var snapshotKeys []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("store: delete idle: %w", err)
+		}
+		n++
+		if key != "" {
+			snapshotKeys = append(snapshotKeys, key)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("store: delete idle: %w", err)
+	}
+	s.dropBlobs(ctx, snapshotKeys)
+	s.dropBlobs(ctx, versionKeys)
+	return n, nil
 }
 
 // UpdateCount reports how many log rows a document currently has. Used by

@@ -21,3 +21,7 @@ func (s *Store) ExecForTest(ctx context.Context, sql string, args ...any) error 
 	_, err := s.pool.Exec(ctx, sql, args...)
 	return err
 }
+
+func (s *Store) QueryForTest(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return s.pool.Query(ctx, sql, args...)
+}

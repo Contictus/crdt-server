@@ -18,6 +18,12 @@ CREATE TABLE IF NOT EXISTS documents (
     -- begins with a varUint that can be any value - there is no prefix that
     -- could not also be a legitimate document. See internal/pack.
     snapshot_codec SMALLINT NOT NULL DEFAULT 0,
+    -- Where the snapshot lives. Empty means the snapshot column beside it;
+    -- anything else is a key in object storage. Two columns rather than a mode
+    -- flag on the server, so a database can hold both at once: turning object
+    -- storage on does not migrate anything, and the rows written before it stay
+    -- readable by the same query.
+    snapshot_key  TEXT NOT NULL DEFAULT '',
     snapshot_seq  BIGINT NOT NULL DEFAULT 0,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -26,6 +32,7 @@ CREATE TABLE IF NOT EXISTS documents (
 -- boot, so every statement here has to be safe to run again.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS snapshot_codec SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS snapshot_key TEXT NOT NULL DEFAULT '';
 
 -- Listing is always "this owner's documents, by name". The owner comes first
 -- because it is the equality, and multi-tenancy makes it the selective one.
@@ -58,6 +65,12 @@ CREATE TABLE IF NOT EXISTS doc_versions (
     payload       BYTEA  NOT NULL,
     -- How payload is encoded; see documents.snapshot_codec.
     codec         SMALLINT NOT NULL DEFAULT 0,
+    -- Where the payload lives; see documents.snapshot_key. When this is set the
+    -- payload column is empty, and the row is the only thing that knows the
+    -- object exists - which is why deletion drops the row first and the object
+    -- second. An orphaned object costs storage; a row pointing at nothing is a
+    -- version that cannot be read.
+    blob_key      TEXT NOT NULL DEFAULT '',
     -- Set when somebody asked for this version by hand, empty for the ones the
     -- timer took. It is what makes "before the migration" findable in a list of
     -- timestamps.
@@ -66,6 +79,7 @@ CREATE TABLE IF NOT EXISTS doc_versions (
 );
 
 ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS codec SMALLINT NOT NULL DEFAULT 0;
+ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS blob_key TEXT NOT NULL DEFAULT '';
 
 -- Listing and pruning both want the newest first for one document.
 CREATE INDEX IF NOT EXISTS doc_versions_recent ON doc_versions (doc_id, id DESC);

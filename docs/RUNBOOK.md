@@ -386,6 +386,11 @@ subdocuments, so walk the tree if your application nests them.
   memory and not yet written. `-durable-writes` removes that window at the cost
   of a database round trip per update. The clients still hold them either way.
 - **Redis.** Nothing in it needs backing up. It carries live fanout only.
+- **Object storage**, if `-s3-bucket` is set. `pg_dump` no longer contains the
+  documents: it holds the rows, and the rows name objects. **A database backup
+  alone is not a backup.** Either use the bucket's own versioning and replication,
+  or take both together and restore them together. A `pg_dump` restored next to a
+  bucket that has moved on is a set of rows naming objects that are not there.
 
 ## Restarts and upgrades
 
@@ -540,6 +545,69 @@ did not know about, and that is the answer the rotation was for.
 - **Content.** Document names and byte counts only, deliberately.
 - **Successful `/metrics` scrapes**, which would be most of the file. Refused
   ones are recorded.
+
+## Object storage
+
+### Orphaned objects
+
+An object nothing points at costs storage and nothing else, which is why the
+write and delete order is arranged to produce those rather than the opposite.
+They come from a failure between the two systems - a process killed between
+writing an object and committing its row, or between deleting a row and deleting
+its object.
+
+Nothing accumulates while the server is working, so this is a periodic check
+rather than an alert. To find them, list the bucket and compare against the rows:
+
+```sh
+# What the database says it owns.
+psql "$DATABASE_URL" -t -A -c   "SELECT snapshot_key FROM documents WHERE snapshot_key <> ''
+   UNION ALL
+   SELECT blob_key FROM doc_versions WHERE blob_key <> ''" | sort > /tmp/referenced
+
+# What is actually there. Strip the -s3-prefix if you set one.
+mc ls --recursive myminio/ycollab/ | awk '{print $NF}' | sort > /tmp/present
+
+comm -13 /tmp/referenced /tmp/present   # orphans: present, nothing points at them
+comm -23 /tmp/referenced /tmp/present   # far worse: rows naming objects that are gone
+```
+
+The second list should be **empty**. Anything in it is a document or a version
+that cannot be read, and it means something deleted objects out from under the
+rows — a lifecycle rule on the bucket, or somebody clearing it by hand. Restore
+those objects from the bucket's version history before anything else.
+
+Delete orphans only after reading the first list and satisfying yourself the
+server is not mid-write: a snapshot object is written before its row commits, so
+an object created seconds ago may be perfectly legitimate.
+
+### "Documents will not load and the database is fine"
+
+With `-s3-bucket` set, the bucket is a hard dependency for reading any document
+whose bytes are there.
+
+1. `ycollab_store_failed_total{op="load"}` climbing while the database is healthy
+   points here.
+2. The process log carries the object key and the underlying error. `403` is
+   credentials or a bucket policy; `404` is the object missing, which is the
+   serious case above; a timeout is the endpoint.
+3. From a replica: `curl -sI "$S3_ENDPOINT/$BUCKET/"` says whether the address is
+   reachable at all.
+4. A server started **without** `-s3-bucket` against a database whose rows name
+   objects reports `is in object storage, and this server has none configured`.
+   That is a configuration mistake, not an outage — the flag was dropped.
+
+### Turning object storage on, or off
+
+On: add the flags and restart. Nothing migrates. The next snapshot and the next
+version of each document go to the bucket; everything already in the database
+stays there and stays readable. There is no moment where the two disagree.
+
+Off: remove the flags and restart, **but the objects already written stay
+authoritative** — the rows still name them, and those documents will not load.
+There is no built-in migration back. If you need one, read each affected document
+through `GET /documents/{name}` while the bucket is still configured and `POST` it
+back to a server without it.
 
 ## Multi-tenancy
 
