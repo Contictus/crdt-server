@@ -117,8 +117,15 @@ func run() error {
 
 		adminAddr = flag.String("admin-addr", envOr("YCOLLAB_ADMIN_ADDR", "127.0.0.1:6060"), "address for /metrics, /statsz and /debug/pprof; empty disables them")
 		pprof     = flag.Bool("pprof", true, "serve /debug/pprof on the admin address")
+
+		showVersion = flag.Bool("version", false, "print the build and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(versionLine())
+		return nil
+	}
 
 	level, err := parseLevel(*logLevel)
 	if err != nil {
@@ -370,7 +377,9 @@ func run() error {
 
 	errc := make(chan error, 1)
 	go func() {
-		log.Info("listening", "addr", *addr)
+		// The build goes on the line an operator is already reading, so
+		// correlating a log with an image never needs a second command.
+		log.Info("listening", "addr", *addr, "version", buildVersion())
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errc <- err
 		}

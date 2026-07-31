@@ -161,3 +161,29 @@ jobs:
         run: |
           go build -o /tmp/ycollab-load ./cmd/ycollab-load
           /tmp/ycollab-load -url ws://127.0.0.1:8081 -clients 200 -rooms 20 -duration 15s -rate 4
+
+  # The npm package, against real server processes. It is a separate job because
+  # it needs Go and Node but neither database: what it tests is the client's
+  # behaviour on a connection - a token being refreshed, a refusal being
+  # reported, a subdocument being connected - and none of that touches storage.
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: install
+        working-directory: client
+        run: npm ci
+
+      - name: test
+        working-directory: client
+        run: npm test

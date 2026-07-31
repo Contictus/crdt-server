@@ -1,0 +1,119 @@
+# Publishes the container image.
+#
+# On a tag, which is the only thing this triggers on: an image that moves when
+# main moves is an image nobody can pin, and "which build broke it" stops having
+# an answer. `main` gets a floating tag as well, for people who want the tip on
+# purpose, but the versioned tags are immutable by convention and nothing here
+# rewrites them.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Also on demand, so the first publish does not require inventing a tag to
+  # find out whether the workflow works.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # The image is not published unless the thing inside it passes. This repeats
+  # the unit tests rather than depending on the CI workflow, because workflows
+  # triggered by different events do not gate each other: a tag push runs this
+  # one and nothing else, so without this step a release could ship a build no
+  # check ever saw.
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ycollab
+          POSTGRES_PASSWORD: ycollab
+          POSTGRES_DB: ycollab
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U ycollab -d ycollab"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+      redis:
+        image: redis:7-alpine
+        ports: ["6380:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 3s --health-retries 15
+    env:
+      YCOLLAB_TEST_DATABASE_URL: postgres://ycollab:ycollab@127.0.0.1:5433/ycollab
+      YCOLLAB_TEST_REDIS_URL: redis://127.0.0.1:6380
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+          check-latest: true
+      - run: go test ./... -race
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Tags: the version, the major.minor line, `latest` for a release tag, and
+      # `main` for a build off the branch. A pre-release (v1.2.0-rc1) does not
+      # move `latest`, which is what the semver flavour buys.
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+          labels: |
+            org.opencontainers.image.version=${{ github.ref_name }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          # arm64 is not decoration: it is what an Apple laptop and a Graviton
+          # instance both are, and an amd64-only image runs on neither without
+          # emulation.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: VERSION=${{ github.ref_name }}
+          provenance: true
+          sbom: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The published image is pulled back and asked what it is. A tag that
+      # points at a build stamped with a different version is the failure this
+      # catches, and it is one that would otherwise be found by an operator
+      # months later while reading a log.
+      - name: the published image says which build it is
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          printed=$(docker run --rm "${IMAGE}:${GITHUB_REF_NAME#v}" -version)
+          echo "$printed"
+          case "$printed" in
+            *"${GITHUB_REF_NAME}"*) ;;
+            *) echo "the image reports '$printed', not ${GITHUB_REF_NAME}"; exit 1 ;;
+          esac

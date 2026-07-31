@@ -29,6 +29,22 @@ Design decisions, the wire-format derivation and the open concerns are in
 
 ## Run it
 
+One command, nothing built, no Go toolchain — a server and a database for it:
+
+```sh
+docker compose -f deploy/docker-compose.quickstart.yml up
+```
+
+[**docs/QUICKSTART.md**](docs/QUICKSTART.md) takes that to two browser tabs
+editing the same document, and then to the one flag that stops it being open to
+everybody. Five minutes.
+
+The image is `ghcr.io/mesutokul/ycollab`, published on tags for `linux/amd64`
+and `linux/arm64`. `ycollab -version` says which build it is, and so does the
+first line of its log.
+
+From source, with the dependencies in the other compose file:
+
 ```sh
 docker compose -f deploy/docker-compose.yml up -d
 go run ./cmd/server -addr :8080 -origins localhost:5173 \

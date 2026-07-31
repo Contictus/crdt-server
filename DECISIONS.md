@@ -1575,6 +1575,34 @@ interval then blocked re-measuring for fifteen seconds. Twenty rooms under load
 reported zero bytes. The interval now throttles re-measuring a weight that is
 already known, and never blocks learning one.
 
+### D134. The image is published on tags only, and it can say which build it is
+A `latest` that moves whenever `main` moves is an image nobody can pin, and
+"which build broke it" stops having an answer. So the release workflow triggers
+on `v*` tags; the branch gets a `main` tag for anyone who wants the tip on
+purpose, and the versioned tags are never rewritten.
+
+It re-runs the tests rather than depending on the CI workflow having passed.
+Workflows triggered by different events do not gate each other - a tag push runs
+the release and nothing else - so without that step a release could ship a build
+no check ever saw.
+
+`-version` and a stamped binary came out of the same thought. An image that
+cannot answer "which build is this" cannot be correlated with an incident, and
+the answer has to survive being copied into a `docker run` months later. The
+version is passed in as a build argument rather than derived, because the `.git`
+directory is deliberately not in the build context; an unstamped `go build`
+falls back to the VCS revision the toolchain records anyway, so a local build
+still says something true. The last step of the workflow pulls the published
+image back and asks it - a tag pointing at a build stamped with a different
+version is exactly the failure an operator would otherwise find months later
+while reading a log.
+
+`--platform=$BUILDPLATFORM` on the build stage is not decoration either. Without
+it, buildx emulates an arm64 toolchain under QEMU to produce the arm64 image;
+with it, Go cross-compiles natively from `GOARCH`. Same output, minutes instead
+of tens of minutes, and arm64 is what an Apple laptop and a Graviton instance
+both are.
+
 ### D133. A missing bucket is its own error, because 404 means two things
 Found by accident: the tests were run against a MinIO whose bucket had been
 wiped by its tmpfs, and every failure read `blob: no such object`. The bucket did

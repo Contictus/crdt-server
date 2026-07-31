@@ -1,0 +1,58 @@
+# A ycollab you can point a browser at, in one command.
+#
+#   docker compose -f deploy/docker-compose.quickstart.yml up
+#
+# This is not deploy/docker-compose.yml, which starts the dependencies for
+# running the tests and expects the server on the host. This one runs the
+# server too, off the published image, so nothing needs building and no Go
+# toolchain has to exist.
+#
+# What it is not: it has no authorisation, so anyone who can reach port 8080
+# may read and write every document, and the server says so at startup. Turning
+# that on is the last step of docs/QUICKSTART.md and is one flag.
+name: ycollab-quickstart
+
+services:
+  ycollab:
+    image: ghcr.io/mesutokul/ycollab:latest
+    command:
+      - -addr=:8080
+      - -admin-addr=:6060
+      - -database-url=postgres://ycollab:ycollab@postgres:5432/ycollab
+      # The demo runs on Vite's port. A browser is refused unless its origin is
+      # named here, which is what stops a page on another site from opening a
+      # WebSocket to this server with somebody's cookies.
+      - -origins=localhost:5173,127.0.0.1:5173
+    ports:
+      - "8080:8080"
+      # Metrics, stats and pprof. Bound to loopback on purpose: pprof will dump
+      # the heap, which is a copy of every document this process is holding.
+      - "127.0.0.1:6060:6060"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ycollab
+      POSTGRES_PASSWORD: ycollab
+      POSTGRES_DB: ycollab
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ycollab -d ycollab"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      # A real volume rather than the tmpfs the test compose uses: the point of
+      # this file is that a document is still there after `docker compose down`.
+      - ycollab-data:/var/lib/postgresql/data
+
+volumes:
+  ycollab-data:
