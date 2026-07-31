@@ -96,6 +96,7 @@ than for clients:
 - `/statsz` — the cluster counters as JSON: how many envelopes this node published and how many
   it filtered out as its own.
 - `/debug/pprof` — the Go profiler. `-pprof=false` turns it off.
+- `GET /documents/{name}` — reads a document without opening a WebSocket. See below.
 - `DELETE /documents/{name}` — removes a document and its log. Refused with 409 while somebody
   is editing it. The listener is the authorisation: this is an operator action, and the tokens
   the server understands are per-document capabilities for editors, not operator credentials.
@@ -107,6 +108,54 @@ They are deliberately not on the port clients connect to. pprof dumps the heap, 
 command line and will block the process for a thirty-second CPU profile on request, so the
 deployment gets to decide who can reach it. `/healthz` is on both, because a load balancer
 probes the port it sends traffic to.
+
+### Reading a document
+
+`GET /documents/{name}` on the admin listener returns the document as a Yjs update — the same
+bytes a client gets from a sync with an empty state vector, so `Y.applyUpdate` reads it
+directly:
+
+```bash
+curl -s http://127.0.0.1:6060/documents/my-doc > my-doc.bin
+```
+
+Every response carries the state vector twice: as `X-Ycollab-State-Vector` (base64) and as the
+`ETag`. The state vector *is* the version, so both work the way you would expect:
+
+- `If-None-Match: <etag>` → `304` when nothing has changed.
+- `?sv=<base64 state vector>` → only what you are missing, rather than the whole document. This
+  is the pair to the webhook: the event hands you a state vector, this turns it into a diff.
+
+`X-Ycollab-Resident` says where the answer came from. A document somebody is editing is read
+from the room, so it is exactly what those clients see. One nobody is editing is read from the
+database *without starting a room* — waking one for a read would hold the document in memory and
+join it to the cluster as a side effect of somebody looking. The consequence in a cluster: an
+edit that is still sitting in another replica's flush window (200 ms by default) is not visible
+yet. Making it exact would mean a bus round trip on every read.
+
+`?format=json` (or `Accept: application/json`) gives a readable view instead:
+
+```json
+{
+  "document": "my-doc",
+  "state_vector": "AQKf1Y…",
+  "resident": true,
+  "clients": 2,
+  "bytes": 1841,
+  "roots": [{ "name": "notes", "text": "hello world", "keys": [] }]
+}
+```
+
+There is no `type` field on a root, and that is the honest answer rather than an omission: **the
+v1 wire format never records what kind a root type is.** `doc.getText('x')` and `doc.getMap('x')`
+read the same bytes two ways, and Yjs decides when the client asks — a server that only ever saw
+the updates cannot know which was meant. So both readings are offered: `text` is the root read
+as a sequence (empty for a map), `keys` is it read as a map (empty for text). The binary form is
+the complete one; this view is a convenience over it, and for an XML root — TipTap, ProseMirror
+— it will show a named root and no content, because the engine decodes XML but exposes no reader
+for it.
+
+A name nothing has ever written is `404`, not an empty document.
 
 ### Webhooks
 

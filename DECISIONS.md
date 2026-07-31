@@ -768,6 +768,63 @@ about it through an atomic counter it drains on its next tick. A failed write
 raises nothing, which is the point: a receiver mirroring the document must not
 record that it was saved when it was not.
 
+### D85. A read is served by the room when there is one, and never starts one
+`GET /documents/{name}` asks the resident room through its mailbox, like every
+other command, so what it returns is exactly what the connected clients are
+looking at - up to a flush interval ahead of the database. A document with no
+room is read from the store directly.
+
+Rejected: starting a room for the read, which is the obvious implementation and
+the wrong one. It would hold the document in memory, join it to the cluster,
+begin its idle timer and start it emitting hooks, all as a side effect of
+somebody looking at it. A read should not change what the server is doing.
+
+The cost is stated rather than hidden: in a cluster, an edit still sitting in
+another replica's flush window is not visible to a read here. Making it exact
+would mean a bus round trip on every read, on the chance that some other node
+holds the document.
+
+### D86. The state vector is the ETag
+It is already the version - it is what a client sends to say what it has, and
+what anti-entropy compares - so `If-None-Match` and `?sv=` fall out of it rather
+than being invented. Two replicas holding the same document produce the same
+ETag, which is what makes it usable behind a load balancer, and `?sv=` turns the
+state vector a webhook just delivered into a diff.
+
+Rejected: a monotonic version counter. It would have to be agreed across
+replicas, which is a consensus problem this server does not otherwise have, to
+replace something the protocol already carries.
+
+### D87. The JSON view has no "type" field, because the wire format has none
+The first version reported a type per root and a `rendered` flag. A test found
+every root coming back as `unknown`, and the reason is in `doc.go`: **the v1
+format never states a root type's kind.** `doc.getText('x')` and
+`doc.getMap('x')` read the same bytes two ways, and Yjs decides at the moment
+the client asks. A server that only ever saw updates cannot know which was
+meant.
+
+So the field is gone rather than guessed. Each root offers both readings - `text`
+for the sequence, `keys` for the map - and one of them is empty. A guess would
+have been right most of the time, which is worse than useless: it would be
+believed.
+
+The binary form remains the complete one. The JSON view is a convenience, and
+for an XML root it shows a name and no content, because the engine decodes XML
+and exposes no reader for it ([C4], [D8]).
+
+### D88. Reading lives on the admin listener, not on the client port
+Two reasons, and the second is the one that decides it.
+
+The document name is the URL path on the client listener, so `ws://host/notes`
+is document "notes". Any HTTP route added there is a document name somebody can
+no longer use.
+
+And there is no token that would authorise it. The tokens this server
+understands are per-document capabilities minted for an editor ([D60]); "read
+any document" is an operator power, and the admin listener is where operator
+powers already live, next to `DELETE /documents/{name}`, with the same argument:
+the deployment decides who can reach the port.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

@@ -384,6 +384,8 @@ func (r *Room) handle(c command) bool {
 		r.frame(v.conn, v.frame)
 	case tickCmd:
 		return r.tick(v.now)
+	case readCmd:
+		r.read(v)
 	case evictCmd:
 		if len(r.conns) > 0 {
 			v.evicted <- false

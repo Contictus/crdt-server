@@ -145,9 +145,16 @@ func startAdmin(addr string, withPprof bool, registry *prometheus.Registry, mana
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 	})
+	// Reading works with or without a database: a resident room can be read
+	// from memory, and without a store that is the only copy there is. A typed
+	// nil would satisfy the interface and then panic, so the conversion is
+	// explicit.
+	var persistence room.Persistence
 	if documents != nil {
+		persistence = documents
 		mux.HandleFunc("DELETE /documents/{name}", deleteDocument(manager, documents, log))
 	}
+	mux.HandleFunc("GET /documents/{name}", getDocument(manager, persistence, log))
 	if withPprof {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
