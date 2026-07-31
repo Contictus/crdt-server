@@ -192,6 +192,36 @@ name, so rows written before the server recorded names have an empty `name` and
 cannot be opened from a listing alone. `PUT .../owner` records the name as a side
 effect, and the runbook has a bulk statement.
 
+### What storage costs
+
+Snapshots and version payloads are deflated before they are written; the update
+log is not, because a keystroke is around twenty bytes and deflate's own header is
+about the same.
+
+**Measured, not estimated: about 2x.** Across five corpora built with real Yjs —
+natural English prose from this repository's own documentation, heavily revised
+prose, and a five-client collaborative document — the ratio is **1.97x to 2.70x**,
+and a live server storing all five reported 583 KB in and 274 KB out (2.13x).
+`tools/fixturegen/corpus.mjs` rebuilds those corpora if you want to check.
+
+It is only 2x because a Yjs update is mostly varint-encoded client ids and clocks,
+which are high entropy by construction; the text is a minority of the bytes. Any
+number much above that comes from a benchmark that types the same few words in a
+loop. `flate.BestCompression` was measured too and buys **nothing** — identical
+ratios for up to five times the CPU.
+
+Compression never makes a payload bigger: if deflate does not help, the bytes are
+stored as they came. The codec is a column beside the blob, not a marker inside
+it, because a Yjs update starts with a varUint that could be any prefix we chose.
+Rows written before this existed have codec `0` and keep reading.
+
+Watch it in production:
+
+```
+rate(ycollab_store_blob_bytes_total{state="raw"}[1h])
+  / rate(ycollab_store_blob_bytes_total{state="stored"}[1h])
+```
+
 ### The audit trail
 
 The admin listener can read, overwrite and delete every document, so what happens on it is

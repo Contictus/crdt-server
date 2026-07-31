@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS documents (
     -- for rows written before this column existed; see the runbook.
     name          TEXT NOT NULL DEFAULT '',
     snapshot      BYTEA,
+    -- How the snapshot is encoded: 0 is the bytes as they came, 1 is deflate.
+    -- A column rather than a marker byte inside the blob, because a Yjs update
+    -- begins with a varUint that can be any value - there is no prefix that
+    -- could not also be a legitimate document. See internal/pack.
+    snapshot_codec SMALLINT NOT NULL DEFAULT 0,
     snapshot_seq  BIGINT NOT NULL DEFAULT 0,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -20,6 +25,7 @@ CREATE TABLE IF NOT EXISTS documents (
 -- For databases that predate the column. Migrate runs the whole file on every
 -- boot, so every statement here has to be safe to run again.
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS snapshot_codec SMALLINT NOT NULL DEFAULT 0;
 
 -- Listing is always "this owner's documents, by name". The owner comes first
 -- because it is the equality, and multi-tenancy makes it the selective one.
@@ -50,12 +56,16 @@ CREATE TABLE IF NOT EXISTS doc_versions (
     -- without downloading both.
     state_vector  BYTEA  NOT NULL,
     payload       BYTEA  NOT NULL,
+    -- How payload is encoded; see documents.snapshot_codec.
+    codec         SMALLINT NOT NULL DEFAULT 0,
     -- Set when somebody asked for this version by hand, empty for the ones the
     -- timer took. It is what makes "before the migration" findable in a list of
     -- timestamps.
     label         TEXT   NOT NULL DEFAULT '',
     PRIMARY KEY (doc_id, id)
 );
+
+ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS codec SMALLINT NOT NULL DEFAULT 0;
 
 -- Listing and pruning both want the newest first for one document.
 CREATE INDEX IF NOT EXISTS doc_versions_recent ON doc_versions (doc_id, id DESC);

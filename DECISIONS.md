@@ -1378,6 +1378,62 @@ The hole this had, found by a test: the check lived on the non-resident restore
 path only, so a cross-tenant `POST /documents/{name}` succeeded for exactly the
 documents somebody was editing at the time. Enforcement now sits on both paths.
 
+### D121. Compression is worth about 2x, which is less than I claimed before measuring
+I estimated three to five times. The measurement says **1.97x to 2.70x**, and a
+live server storing five real corpora reported 2.13x. The estimate was wrong and
+the number in the README is the measured one.
+
+The first corpus I generated reported 64x, which is what put me on to it: it typed
+the same twenty-five words in a loop, so what deflate was compressing was my
+generator rather than a document. `tools/fixturegen/corpus.mjs` now builds five
+cases that bracket the truth - natural English prose from this repository's own
+documentation at one end, words drawn from a four-thousand-entry vocabulary at the
+other - and it is committed so the number can be rechecked rather than believed.
+
+Two times is still worth having: history is twenty-four whole documents per
+document, and halving the largest thing in the database costs nothing on the hot
+path, because snapshots are written at compaction and versions on a timer.
+
+The reason it is only two times is worth knowing: a Yjs update is mostly
+varint-encoded client ids and clocks, which are high entropy by construction. The
+text is a minority of the bytes. Anybody quoting a much larger figure for a CRDT
+store is measuring their test data.
+
+`flate.BestCompression` was measured against `DefaultCompression` on every corpus
+and produced **identical** ratios for up to five times the CPU, so the default
+stands - on measurement rather than on the usual assumption that the default is
+fine.
+
+Rejected: zstd, which would be a dependency for a ratio that decides nothing here.
+Rejected: gzip, whose ten-byte header would restate per blob what the codec column
+already says.
+
+### D122. The codec is a column, not a prefix byte
+The obvious encoding is a marker byte at the front of the blob. It does not work.
+Every row written before compression existed is a bare Yjs update, and a Yjs
+update begins with a varUint that can hold any value - including whichever byte we
+picked as the marker. There is no prefix that could not also be a legitimate
+document, so reading the old rows would be a guess.
+
+A column cannot be ambiguous, its default of `0` already means "raw", and it makes
+"how much of this database is still uncompressed" a question SQL can answer during
+a migration. The cost is two `ALTER TABLE` statements, which the schema file
+already needed for the name column.
+
+An unknown codec is an error rather than a fallback. That is what a rollback to an
+older binary looks like, and reading those bytes as something else would produce a
+document that is wrong instead of one that is missing.
+
+### D123. Storing must never make a payload larger
+`Pack` compresses, compares, and keeps the raw bytes when compression did not
+help. Without that guard the test shows 511 random bytes becoming 521 - deflate
+genuinely grows incompressible input, and a CRDT update full of ids is not an
+exotic case.
+
+A storage layer that can grow a document by storing it is a storage layer with a
+surprising bill, and the surprise would land on exactly the documents that are
+already the most expensive.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

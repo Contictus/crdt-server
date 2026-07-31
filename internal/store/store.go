@@ -15,6 +15,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mesutokul/ycollab/internal/metrics"
+	"github.com/mesutokul/ycollab/internal/pack"
 )
 
 //go:embed schema.sql
@@ -27,6 +30,28 @@ var ErrStaleSnapshot = errors.New("store: a newer snapshot already exists")
 // A Store is the database. It is safe for concurrent use.
 type Store struct {
 	pool *pgxpool.Pool
+	// metric is where compression is reported. Never nil after Open: a set
+	// registered nowhere costs two atomic adds, which is cheaper than a nil
+	// check at every call site and impossible to forget.
+	metric *metrics.Metrics
+}
+
+// SetMetrics points the store at a registered collector set. It is a method
+// rather than a parameter to Open because a store is useful without one - every
+// test has a store and does not want a registry - and because the process builds
+// its registry after it has connected.
+func (s *Store) SetMetrics(m *metrics.Metrics) {
+	if m != nil {
+		s.metric = m
+	}
+}
+
+// observePack records what compression achieved, so the claim that it is worth
+// doing is one an operator can check against their own documents rather than
+// one they have to take from a README.
+func (s *Store) observePack(raw, stored int) {
+	s.metric.BlobBytes.WithLabelValues("raw").Add(float64(raw))
+	s.metric.BlobBytes.WithLabelValues("stored").Add(float64(stored))
 }
 
 // Open connects and verifies the connection.
@@ -39,7 +64,7 @@ func Open(ctx context.Context, url string) (*Store, error) {
 		pool.Close()
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
-	return &Store{pool: pool}, nil
+	return &Store{pool: pool, metric: metrics.Nop()}, nil
 }
 
 // Close releases the pool.
@@ -188,9 +213,10 @@ func (s *Store) load(ctx context.Context, id UUID, name string, owner UUID, any 
 		doc.Owner = found
 	}
 
+	var codec pack.Codec
 	if err := tx.QueryRow(ctx,
-		`SELECT snapshot, snapshot_seq, owner_id FROM documents WHERE id = $1`, id,
-	).Scan(&doc.Snapshot, &doc.SnapshotSeq, &doc.Owner); err != nil {
+		`SELECT snapshot, snapshot_codec, snapshot_seq, owner_id FROM documents WHERE id = $1`, id,
+	).Scan(&doc.Snapshot, &codec, &doc.SnapshotSeq, &doc.Owner); err != nil {
 		if any && errors.Is(err, pgx.ErrNoRows) {
 			// Nothing here, and nothing created. The caller turns this into
 			// "no such document"; an empty Document would be a lie that reads
@@ -198,6 +224,11 @@ func (s *Store) load(ctx context.Context, id UUID, name string, owner UUID, any 
 			return &Document{}, nil
 		}
 		return nil, fmt.Errorf("store: read document: %w", err)
+	}
+	if doc.Snapshot != nil {
+		if doc.Snapshot, err = pack.Unpack(doc.Snapshot, codec); err != nil {
+			return nil, fmt.Errorf("store: read snapshot: %w", err)
+		}
 	}
 	doc.LastSeq = doc.SnapshotSeq
 
@@ -308,11 +339,17 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 		return fmt.Errorf("store: compact lock: %w", err)
 	}
 
+	// Compressed here rather than by the caller: the room hands over the
+	// document it holds, and how the database chooses to spend bytes is the
+	// database's business. The log rows deleted below are stored as they came,
+	// because a keystroke is smaller than deflate's own header.
+	packed, codec := pack.Pack(snapshot)
+	s.observePack(len(snapshot), len(packed))
 	tag, err := tx.Exec(ctx,
 		`UPDATE documents
-		    SET snapshot = $2, snapshot_seq = $3, updated_at = now()
+		    SET snapshot = $2, snapshot_codec = $4, snapshot_seq = $3, updated_at = now()
 		  WHERE id = $1 AND snapshot_seq < $3`,
-		id, snapshot, watermark)
+		id, packed, watermark, codec)
 	if err != nil {
 		return fmt.Errorf("store: write snapshot: %w", err)
 	}

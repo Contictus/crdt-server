@@ -140,6 +140,7 @@ func run() error {
 			return err
 		}
 		defer db.Close()
+		db.SetMetrics(collectors)
 		if err := db.Migrate(context.Background()); err != nil {
 			return err
 		}

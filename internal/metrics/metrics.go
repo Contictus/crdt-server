@@ -71,6 +71,12 @@ type Metrics struct {
 	AuthRequests *prometheus.CounterVec
 	AuthCache    *prometheus.CounterVec
 	AuthDuration prometheus.Histogram
+
+	// BlobBytes counts what the snapshots and version payloads weighed before
+	// and after compression. Two counters rather than a ratio, because a ratio
+	// cannot be summed across replicas and this one is a claim about cost that
+	// an operator should be able to check against their own documents.
+	BlobBytes *prometheus.CounterVec
 }
 
 // New registers a set of collectors and returns them.
@@ -216,6 +222,11 @@ func New(reg prometheus.Registerer) *Metrics {
 			Help:    "Time for one call to the authorization endpoint. A client is waiting on this.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 3, 10),
 		}),
+
+		BlobBytes: factory.counterVec(prometheus.CounterOpts{
+			Name: "ycollab_store_blob_bytes_total",
+			Help: "Snapshot and version bytes written, by state: raw before compression, stored after.",
+		}, []string{"state"}),
 	}
 }
 

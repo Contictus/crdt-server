@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/mesutokul/ycollab/internal/pack"
 )
 
 // Version history answers the question the rest of this store cannot: not "what
@@ -38,7 +40,9 @@ type Version struct {
 	// Label is empty for the versions the timer took, and whatever the caller
 	// said for the ones taken by hand.
 	Label string
-	// Bytes is the size of Payload, present on listings where Payload is not.
+	// Bytes is the size of Payload. On a listing, where Payload is not read,
+	// it is the *stored* size, which is what the version costs and may be
+	// smaller than the document it holds; on a load it is the document.
 	Bytes int
 	// Payload is the whole document as a Yjs update. Nil on listings: a list of
 	// twenty versions of a megabyte document is not a listing.
@@ -83,16 +87,21 @@ func (s *Store) SaveVersion(ctx context.Context, id UUID, v Version, minAge time
 		return false, fmt.Errorf("store: save version lock: %w", err)
 	}
 
+	// History is the largest thing in this database - a whole document per
+	// version, twenty-four per document by default - so it is the blob most
+	// worth compressing.
+	packed, codec := pack.Pack(v.Payload)
+	s.observePack(len(v.Payload), len(packed))
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO doc_versions (doc_id, state_vector, payload, label)
-		 SELECT $1, $2, $3, $4
+		`INSERT INTO doc_versions (doc_id, state_vector, payload, label, codec)
+		 SELECT $1, $2, $3, $4, $6
 		  WHERE EXISTS (SELECT 1 FROM documents WHERE id = $1)
 		    AND NOT EXISTS (
 		          SELECT 1 FROM doc_versions v
 		           WHERE v.doc_id = $1
 		             AND (v.created_at > now() - $5::interval OR v.state_vector = $2)
 		             AND v.id = (SELECT max(id) FROM doc_versions WHERE doc_id = $1))`,
-		id, v.StateVector, v.Payload, v.Label, minAge)
+		id, v.StateVector, packed, v.Label, minAge, codec)
 	if err != nil {
 		return false, fmt.Errorf("store: save version: %w", err)
 	}
@@ -137,15 +146,19 @@ func (s *Store) ListVersions(ctx context.Context, id UUID, limit int) ([]Version
 // guesses a number must not be handed somebody else's document.
 func (s *Store) LoadVersion(ctx context.Context, id UUID, version int64) (*Version, error) {
 	v := &Version{ID: version}
+	var codec pack.Codec
 	err := s.pool.QueryRow(ctx,
-		`SELECT created_at, state_vector, label, payload
+		`SELECT created_at, state_vector, label, payload, codec
 		   FROM doc_versions WHERE doc_id = $1 AND id = $2`,
 		id, version,
-	).Scan(&v.CreatedAt, &v.StateVector, &v.Label, &v.Payload)
+	).Scan(&v.CreatedAt, &v.StateVector, &v.Label, &v.Payload, &codec)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNoVersion
 		}
+		return nil, fmt.Errorf("store: load version: %w", err)
+	}
+	if v.Payload, err = pack.Unpack(v.Payload, codec); err != nil {
 		return nil, fmt.Errorf("store: load version: %w", err)
 	}
 	v.Bytes = len(v.Payload)

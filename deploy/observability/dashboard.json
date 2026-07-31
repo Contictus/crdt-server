@@ -129,15 +129,29 @@
       "fieldConfig": { "defaults": { "unit": "reqps" } }
     },
     {
+      "type": "timeseries",
+      "title": "Compression",
+      "description": "Snapshot and version bytes before and after deflate. Measured at about 2x on real documents; a ratio near 1 means the content is incompressible, which is what a CRDT update of a document full of ids looks like.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "expr": "sum(rate(ycollab_store_blob_bytes_total{job=\"$job\",state=\"raw\"}[1h])) / sum(rate(ycollab_store_blob_bytes_total{job=\"$job\",state=\"stored\"}[1h]))",
+          "legendFormat": "ratio"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "none", "min": 0 } }
+    },
+    {
       "type": "row",
       "title": "Cluster",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
     },
     {
       "type": "timeseries",
       "title": "Bus traffic",
       "description": "self_filtered is our own messages coming back from Pub/Sub and being dropped: loop prevention working, not a fault. If published grows while nobody is typing, something is looping.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum(rate(ycollab_cluster_published_update_total{job=\"$job\"}[5m]))", "legendFormat": "published" },
@@ -150,7 +164,7 @@
       "type": "timeseries",
       "title": "Repairs and losses",
       "description": "Redis Pub/Sub is at-most-once. A trickle of repairs is the anti-entropy design working; a steady stream means the bus is losing messages.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum(rate(ycollab_cluster_answered_state_vector_total{job=\"$job\"}[5m]))", "legendFormat": "repairs sent" },
@@ -164,13 +178,13 @@
     {
       "type": "row",
       "title": "Refusals",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
     },
     {
       "type": "timeseries",
       "title": "Refused, by reason",
       "description": "unauthorized is a bad or missing token; read_only is a viewer trying to edit; too_many_connections is the node at its cap.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (reason) (rate(ycollab_denied_total{job=\"$job\"}[5m]))", "legendFormat": "{{reason}}" }
@@ -181,7 +195,7 @@
       "type": "timeseries",
       "title": "Connections closed, by code",
       "description": "1001 is a shutdown, 1002 a protocol error, 1008 backpressure or a refused write, 1011 a document that could not be served.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (code) (rate(ycollab_connections_closed_total{job=\"$job\"}[5m]))", "legendFormat": "{{code}}" }
@@ -191,13 +205,13 @@
     {
       "type": "row",
       "title": "Webhooks",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }
     },
     {
       "type": "timeseries",
       "title": "Deliveries",
       "description": "Events the receiver accepted, and events given up on after their retries. Dropped means the queue was full and the event is gone: whatever the webhook feeds is now missing edits.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (event) (rate(ycollab_hooks_sent_total{job=\"$job\"}[5m]))", "legendFormat": "sent {{event}}" },
@@ -210,7 +224,7 @@
       "type": "timeseries",
       "title": "Queue depth and delivery time",
       "description": "The queue is how far behind the receiver is. It is bounded, and events are dropped rather than allowed to slow a room down, so a queue sitting near its limit is a warning that drops are next.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum (ycollab_hook_queue_depth{job=\"$job\"})", "legendFormat": "queued" },
@@ -220,13 +234,13 @@
     {
       "type": "row",
       "title": "Authorization",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 54 }
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 63 }
     },
     {
       "type": "timeseries",
       "title": "Decisions, by result",
       "description": "Only populated with -auth-url. deny is the endpoint refusing somebody; error is the endpoint not answering, which under -auth-fail-open means nobody is being checked; misconfigured is the endpoint answering something this server cannot act on, which refuses everybody and never self-heals.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 55 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 64 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (result) (rate(ycollab_auth_requests_total{job=\"$job\"}[5m]))", "legendFormat": "{{result}}" },
@@ -238,7 +252,7 @@
       "type": "timeseries",
       "title": "Time to authorize",
       "description": "A client is holding an open socket for the length of this, before its document loads.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 55 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 64 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
