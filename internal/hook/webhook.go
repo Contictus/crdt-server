@@ -3,9 +3,7 @@ package hook
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -17,11 +15,11 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/mesutokul/ycollab/internal/metrics"
+	"github.com/mesutokul/ycollab/internal/signature"
 )
 
 // Defaults for a Webhook. They are sized for a receiver that answers in
@@ -430,66 +428,20 @@ func encode(b []byte) string {
 	return base64.StdEncoding.EncodeToString(b)
 }
 
-// Sign returns the value of the signature header for a body.
-//
-// The timestamp is inside the signed text, not just beside it, so a captured
-// request cannot be replayed later with a fresh timestamp: changing it breaks
-// the signature. A receiver should reject a timestamp far from its own clock
-// for the same reason.
+// Sign returns the value of the signature header for a body. The scheme lives
+// in internal/signature, which the authorisation callback signs with too; this
+// stays as the name a webhook receiver reaches for.
 func Sign(secret []byte, at time.Time, body []byte) string {
-	t := strconv.FormatInt(at.Unix(), 10)
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(t))
-	mac.Write([]byte("."))
-	mac.Write(body)
-	return "t=" + t + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+	return signature.Sign(secret, at, body)
 }
 
 // Verify checks a signature header against a body. It is what a receiver
-// written in Go would do, and what this package's tests use, so the format has
-// exactly one reader and one writer.
+// written in Go would do, and what this package's tests use.
 //
 // tolerance rejects a signature whose timestamp is too far from now; zero
 // accepts any age.
 func Verify(secret []byte, header string, body []byte, now time.Time, tolerance time.Duration) error {
-	var ts, sig string
-	for part := range strings.SplitSeq(header, ",") {
-		k, v, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "t":
-			ts = v
-		case "v1":
-			sig = v
-		}
-	}
-	if ts == "" || sig == "" {
-		return errors.New("hook: malformed signature header")
-	}
-	secs, err := strconv.ParseInt(ts, 10, 64)
-	if err != nil {
-		return errors.New("hook: bad signature timestamp")
-	}
-	if tolerance > 0 {
-		age := now.Sub(time.Unix(secs, 0))
-		if age < -tolerance || age > tolerance {
-			return fmt.Errorf("hook: signature is %s old", age)
-		}
-	}
-	want, err := hex.DecodeString(sig)
-	if err != nil {
-		return errors.New("hook: signature is not hex")
-	}
-	mac := hmac.New(sha256.New, secret)
-	mac.Write([]byte(ts))
-	mac.Write([]byte("."))
-	mac.Write(body)
-	if !hmac.Equal(want, mac.Sum(nil)) {
-		return errors.New("hook: signature does not match")
-	}
-	return nil
+	return signature.Verify(secret, header, body, now, tolerance)
 }
 
 func newDeliveryID() string {
