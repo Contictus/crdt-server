@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -107,6 +108,76 @@ func getDocument(manager *room.Manager, documents room.Persistence, log *slog.Lo
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(body); err != nil {
 			log.Debug("could not write document", "document", name, "err", err)
+		}
+	}
+}
+
+// maxImport bounds a merge body. A Yjs document that a person edited is
+// kilobytes; this is the size of the largest frame a client may send, which is
+// already generous for one.
+const maxImport = 16 << 20
+
+// mergeDocument applies a Yjs update to a document: the restore half of the
+// read API, and the reason a backup taken with GET is a backup rather than a
+// souvenir.
+//
+// It is POST rather than PUT because it does not replace anything. These are
+// CRDT updates, so applying one adds what it carries to what is already there,
+// and the format has no operation that makes a document forget. Restoring over
+// a document that has moved on gives the union of the two; DELETE first when
+// that is not what you want.
+func mergeDocument(manager *room.Manager, documents room.Persistence, log *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := r.PathValue("name")
+		if name == "" {
+			http.Error(w, "no document name", http.StatusBadRequest)
+			return
+		}
+		update, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxImport))
+		if err != nil {
+			http.Error(w, "could not read the body", http.StatusRequestEntityTooLarge)
+			return
+		}
+		if len(update) == 0 || room.IsEmptyUpdate(update) {
+			// An update that says nothing would be written, published and
+			// reported as a success, having changed nothing at all.
+			http.Error(w, "the body is not a Yjs update, or is one that carries nothing", http.StatusBadRequest)
+			return
+		}
+
+		if resident := manager.Resident(name); resident != nil {
+			switch err := resident.Merge(update); {
+			case err == nil:
+				log.Warn("document merged", "document", name, "bytes", len(update), "resident", true)
+				w.WriteHeader(http.StatusNoContent)
+				return
+			case errors.Is(err, room.ErrClosed):
+				// Evicted while we were asking; fall through to the store,
+				// which now has its final snapshot.
+			default:
+				http.Error(w, "the body would not apply: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
+		defer cancel()
+		err = room.Import(ctx, room.MergeConfig{
+			Store:  documents,
+			Bus:    manager.Bus(),
+			NodeID: manager.NodeID(),
+		}, name, update)
+		switch {
+		case errors.Is(err, room.ErrNoDocument):
+			// No store and no room: there is nowhere to put it that would
+			// survive the next second.
+			http.Error(w, "this server has no database, so a document with no room cannot be written", http.StatusServiceUnavailable)
+		case err != nil:
+			log.Error("could not merge document", "document", name, "err", err)
+			http.Error(w, "could not merge the update", http.StatusInternalServerError)
+		default:
+			log.Warn("document merged", "document", name, "bytes", len(update), "resident", false)
+			w.WriteHeader(http.StatusNoContent)
 		}
 	}
 }

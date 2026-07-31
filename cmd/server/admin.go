@@ -155,6 +155,7 @@ func startAdmin(addr string, withPprof bool, registry *prometheus.Registry, mana
 		mux.HandleFunc("DELETE /documents/{name}", deleteDocument(manager, documents, log))
 	}
 	mux.HandleFunc("GET /documents/{name}", getDocument(manager, persistence, log))
+	mux.HandleFunc("POST /documents/{name}", mergeDocument(manager, persistence, log))
 	if withPprof {
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)

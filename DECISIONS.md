@@ -825,6 +825,56 @@ any document" is an operator power, and the admin listener is where operator
 powers already live, next to `DELETE /documents/{name}`, with the same argument:
 the deployment decides who can reach the port.
 
+### D89. Restoring is POST and it merges, because the format cannot replace
+A backup nobody can restore is not a backup, so `GET /documents/{name}` needed a
+counterpart. It is POST rather than PUT, and the difference is not pedantry:
+these are CRDT updates. Applying one adds what it carries to what is already
+there, and the v1 format has no operation that makes a document forget - a
+deletion is itself an update saying what was deleted. A PUT would promise a
+replacement this server cannot perform.
+
+So the method, the handler's name and the documentation all say *merge*, and the
+runbook says to `DELETE` first when you want the backup rather than the union of
+the backup and whatever the document has become.
+
+A merge into a resident room goes through the mailbox like every other command,
+is broadcast to every connection and published to the cluster. Clients that were
+already connected have to hear about it, or they keep building on a version the
+server no longer holds.
+
+Rejected: refusing to merge into a document that has connections, the way DELETE
+does. DELETE is destructive and a merge is not; refusing would mean a document
+can only be restored when nobody is looking at it, which is the opposite of when
+somebody notices it needs restoring.
+
+### D90. A restore with no local room still publishes to the bus
+When no room on this node holds the document, the update is appended to the log
+directly. That is enough for the next load - and invisible to a replica that has
+the document resident right now, which would not reread it until it evicted, and
+would then write its own snapshot over the restore.
+
+So `Import` publishes the update on the cluster bus as well, under this node's
+id. Any replica holding the document applies it as an ordinary remote update.
+There is no room here to filter it back, and there is nothing to loop.
+
+Rejected: telling the operator to stop the cluster first. It is correct advice
+for a whole-database restore, where the tables move underneath every replica at
+once, and the runbook gives it there. For one document it would be a footgun
+disguised as a procedure.
+
+### D91. The runbook's commands were run, not written
+Every command in `docs/RUNBOOK.md` was executed against the real containers
+before it went in, and the backup section is a transcript. The one that mattered
+was `pg_restore`: `doc_updates.seq` is `GENERATED ALWAYS AS IDENTITY` and the
+primary key is `(doc_id, seq)`, so a restore that reset the sequence would make
+the next write to every restored document collide. It does not - `max(seq)` and
+the sequence's `last_value` were both 76 after the round trip, and the next
+insert got 77 - but that is a fact worth checking rather than assuming, and the
+runbook tells the reader to check it too.
+
+The per-document backup and restore is not documented on trust either: it is
+what `TestADocumentCanBeBackedUpAndRestored` performs on every CI run.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

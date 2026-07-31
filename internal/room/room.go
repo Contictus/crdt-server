@@ -386,6 +386,8 @@ func (r *Room) handle(c command) bool {
 		return r.tick(v.now)
 	case readCmd:
 		r.read(v)
+	case mergeCmd:
+		r.merge(v)
 	case evictCmd:
 		if len(r.conns) > 0 {
 			v.evicted <- false

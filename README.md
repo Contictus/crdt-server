@@ -101,8 +101,10 @@ than for clients:
   is editing it. The listener is the authorisation: this is an operator action, and the tokens
   the server understands are per-document capabilities for editors, not operator credentials.
 
-Alert rules and a Grafana dashboard are in `deploy/observability/`. `-retention 720h` deletes
-documents nothing has touched for a month; it is off unless asked for.
+Alert rules and a Grafana dashboard are in `deploy/observability/`, and
+[`docs/RUNBOOK.md`](docs/RUNBOOK.md) says what to do about each alert, plus backup and restore.
+`-retention 720h` deletes documents nothing has touched for a month; it is off unless asked
+for.
 
 They are deliberately not on the port clients connect to. pprof dumps the heap, prints the
 command line and will block the process for a thirty-second CPU profile on request, so the
@@ -156,6 +158,25 @@ the complete one; this view is a convenience over it, and for an XML root — Ti
 for it.
 
 A name nothing has ever written is `404`, not an empty document.
+
+`POST /documents/{name}` is the other half: it takes a Yjs update as the body and applies it.
+That is what makes a `GET` a backup rather than a souvenir, and what seeds a document from a
+template.
+
+```bash
+curl -sf $ADMIN/documents/my-doc > my-doc.bin          # back it up
+curl -sf -X POST --data-binary @my-doc.bin $ADMIN/documents/my-doc   # put it back
+```
+
+It **merges**; it does not replace, and the method says so. These are CRDT updates: applying one
+adds what it carries to what is already there, and the format has no operation that makes a
+document forget. Restoring over a document that has moved on gives the union of the two —
+`DELETE` first when that is not what you want.
+
+A merge into a document people are editing reaches them: it is broadcast to every connection and
+published to the other replicas, so nobody is left building on a version the server no longer
+has. A body that is not an update, or one that carries nothing, is refused with 400 rather than
+written and reported as a success.
 
 ### Webhooks
 
