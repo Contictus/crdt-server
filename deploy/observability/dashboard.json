@@ -117,13 +117,14 @@
     },
     {
       "type": "timeseries",
-      "title": "Write failures and compactions",
-      "description": "A failed write means edits exist only in memory and in the clients that made them.",
+      "title": "Write failures, compactions and versions",
+      "description": "A failed write means edits exist only in memory and in the clients that made them. Versions are the history: with -version-interval set, a flat line while people are editing means it is not working.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         { "expr": "sum by (op) (rate(ycollab_store_failed_total{job=\"$job\"}[5m]))", "legendFormat": "failed {{op}}" },
-        { "expr": "sum(rate(ycollab_compactions_total{job=\"$job\"}[5m]))", "legendFormat": "compactions" }
+        { "expr": "sum(rate(ycollab_compactions_total{job=\"$job\"}[5m]))", "legendFormat": "compactions" },
+        { "expr": "sum(rate(ycollab_versions_total{job=\"$job\"}[5m]))", "legendFormat": "versions" }
       ],
       "fieldConfig": { "defaults": { "unit": "reqps" } }
     },

@@ -248,8 +248,9 @@ func (w *Webhook) Close(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		// Out of time. Cancel the workers so they abandon whatever is in flight
-		// rather than holding the process open past the shutdown deadline.
+		// Out of time. Cancelling the workers aborts the request in flight and
+		// makes them drop the rest of the queue, so the process is not held
+		// open past the deadline it was given.
 		w.stop()
 		<-done
 		return ctx.Err()
@@ -259,6 +260,15 @@ func (w *Webhook) Close(ctx context.Context) error {
 func (w *Webhook) work() {
 	defer w.wg.Done()
 	for e := range w.queue {
+		// Close cancels this once it has run out of patience, and then the rest
+		// of the queue is abandoned rather than delivered. Without the check a
+		// forced shutdown still walks the whole queue, paying a request timeout
+		// per event: with a receiver that is not answering, that turned a ten
+		// second shutdown deadline into a minute. Measured, not theorised.
+		if w.stopped.Err() != nil {
+			w.metric.HooksDropped.Inc()
+			continue
+		}
 		w.metric.HookQueue.Set(float64(len(w.queue)))
 		w.deliver(e)
 	}
@@ -302,7 +312,10 @@ func (w *Webhook) deliver(e Event) {
 
 // post makes one request. It reports whether the failure is worth another try.
 func (w *Webhook) post(e Event, body []byte, delivery string) (retryable bool, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), w.cfg.Timeout)
+	// Derived from w.stopped, not from Background: a forced shutdown has to
+	// abort the request in flight, or the process waits out this timeout after
+	// having already decided not to.
+	ctx, cancel := context.WithTimeout(w.stopped, w.cfg.Timeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.cfg.URL, bytes.NewReader(body))

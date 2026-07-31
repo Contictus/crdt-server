@@ -1059,6 +1059,75 @@ turning an authorisation check into a document read; and a token whose scope
 grows as the document changes is not a scope anybody can reason about. A
 capability should name what it grants ([D60]).
 
+### D102. `INSERT ... WHERE NOT EXISTS` is not a lock
+Found in a debugging pass, by doubting a claim I had made rather than by a
+failure. D96 said the duplicate check on `SaveVersion` was safe between replicas
+because it was "a condition on the insert rather than a read followed by a
+write", so "there is no window between deciding and writing". That is wrong, and
+the demonstration is two psql sessions against this schema:
+
+    A: BEGIN; INSERT ... WHERE NOT EXISTS (...);   -- held open
+    B:        INSERT ... WHERE NOT EXISTS (...);   -- while A is uncommitted
+    -> two rows
+
+Under READ COMMITTED each statement evaluates its subquery against its own
+snapshot, neither sees the other's uncommitted row, and both insert.
+
+The damage was not corruption but retention. Duplicates eat the budget, so
+"keep the last 24" on a three-replica cluster silently becomes "keep the last
+eight moments" - the history gets shorter exactly as the cluster gets bigger.
+
+The fix is the advisory lock `Compact` already takes for the same reason (C2,
+C6). The regression test does not try to win a race: it holds the document's
+lock from outside and watches `SaveVersion` wait for it, so it fails
+deterministically if the lock is ever removed by somebody tidying up a
+transaction that appears to do nothing.
+
+### D103. A forced shutdown has to abandon the queue, not drain it slowly
+`Webhook.Close` took a deadline and did not honour it. On timeout it cancelled
+the workers - but the request in flight was built from `context.Background`, so
+cancelling did not abort it, and the workers then went on to drain the rest of
+the queue, paying one request timeout per event.
+
+Measured: a one-second deadline against a receiver that accepts and never
+answers did not return in **two minutes**. The comment above the code said it
+abandoned in-flight work; it did not.
+
+This matters because of where it lands. In Kubernetes the process is SIGKILLed
+at the end of `terminationGracePeriodSeconds`, so an overrunning Close turns
+"the webhook endpoint is down" into "rolling deploys lose the flush window" -
+a data-loss bug wearing an observability bug's clothes.
+
+Requests are now built from the shutdown context, and workers stop taking new
+events once it is cancelled. Same measurement afterwards: 1.01 s.
+
+A note on method: the first evidence for this came from timing a real process
+through `taskkill` and a `tasklist` polling loop, which measures the harness
+more than the server. The number it produced was withdrawn and the defect
+re-established with a unit test that fails without the fix and passes with it.
+
+### D104. "No such document" and "no history is kept" are different answers
+`POST /documents/{name}/versions` mapped both `ErrNoDocument` and
+`ErrNoVersioning` to `503 this server keeps no version history`. So asking to
+version a name that does not exist, on a server where versioning works
+perfectly, told the operator their versioning was not configured. Confirmed
+against a running server before it was changed; it is now `404`.
+
+The general shape is worth keeping in mind: two errors joined in one `case` arm
+because they were handled the same way, and the message could only be true for
+one of them.
+
+### D105. A read that skipped rows says so
+`Fetch` applied stored updates and ignored the ones that would not apply, which
+is right - one corrupt row must not make a document unopenable, and the room
+does the same. But the room *logs* it and `Fetch` was silent, so a document read
+over HTTP came back quietly short with no signal anywhere.
+
+Whoever calls that endpoint is very possibly taking a backup, and a backup that
+is missing a few updates and looks identical to a good one is the worst version
+of this. The count now travels back on the snapshot, the handler logs it, and
+the JSON view carries `skipped`.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

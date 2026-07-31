@@ -218,6 +218,13 @@ func TestAskingForAVersionThatIsNotThere(t *testing.T) {
 	if resp, _ := get(t, srv, "/documents/"+doc+"/versions/latest", nil); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("a non-numeric version returned %d, want 400", resp.StatusCode)
 	}
+	// And asking to version a document that does not exist says so. It used to
+	// answer 503 "this server keeps no version history", which is a different
+	// claim entirely and sends whoever reads it to check the wrong setting.
+	if code := adminPostQuery(t, srv, "/documents/"+doc+"-nope/versions"); code != http.StatusNotFound {
+		t.Errorf("versioning a missing document returned %d, want 404", code)
+	}
+
 	// A document with no history lists an empty history rather than failing.
 	if list := listVersionsOf(t, srv, doc); len(list.Versions) != 0 {
 		t.Errorf("a document with no history listed %d versions", len(list.Versions))

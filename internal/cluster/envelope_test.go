@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/mesutokul/ycollab/internal/crdt/lib0"
 )
 
 func TestEnvelopeRoundTrips(t *testing.T) {
@@ -12,7 +14,11 @@ func TestEnvelopeRoundTrips(t *testing.T) {
 		// The largest origin an id can be: lib0's varUint mirrors JavaScript and
 		// stops at 2^53-1, which is why NewNodeID masks to 53 bits.
 		env := Envelope{Origin: 1<<53 - 1, Kind: kind, Payload: []byte{1, 2, 3, 0, 255}}
-		got, err := Decode(env.Encode())
+		raw, err := env.Encode()
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		got, err := Decode(raw)
 		if err != nil {
 			t.Fatalf("%v: decode: %v", kind, err)
 		}
@@ -26,7 +32,11 @@ func TestEnvelopeRoundTrips(t *testing.T) {
 // written to encodes to a single zero byte, and a lost length prefix would turn
 // that into a decode error at exactly the moment anti-entropy matters most.
 func TestEnvelopeCarriesAnEmptyPayload(t *testing.T) {
-	got, err := Decode(Envelope{Origin: 1, Kind: KindStateVector}.Encode())
+	raw, err := Envelope{Origin: 1, Kind: KindStateVector}.Encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := Decode(raw)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -43,7 +53,11 @@ func TestNewNodeIDIsEncodable(t *testing.T) {
 		if id == 0 {
 			t.Fatal("generated the reserved zero id")
 		}
-		got, err := Decode(Envelope{Origin: id, Kind: KindUpdate}.Encode())
+		raw, err := Envelope{Origin: id, Kind: KindUpdate}.Encode()
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		got, err := Decode(raw)
 		if err != nil {
 			t.Fatalf("node id %d will not encode: %v", id, err)
 		}
@@ -54,7 +68,10 @@ func TestNewNodeIDIsEncodable(t *testing.T) {
 }
 
 func TestEnvelopeRejectsWhatItCannotTrust(t *testing.T) {
-	valid := Envelope{Origin: 7, Kind: KindUpdate, Payload: []byte{9}}.Encode()
+	valid, err := Envelope{Origin: 7, Kind: KindUpdate, Payload: []byte{9}}.Encode()
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -83,7 +100,11 @@ func TestEnvelopeRejectsWhatItCannotTrust(t *testing.T) {
 }
 
 func FuzzDecodeNeverPanics(f *testing.F) {
-	f.Add(Envelope{Origin: 1, Kind: KindUpdate, Payload: []byte{1, 2}}.Encode())
+	seed, err := Envelope{Origin: 1, Kind: KindUpdate, Payload: []byte{1, 2}}.Encode()
+	if err != nil {
+		f.Fatal(err)
+	}
+	f.Add(seed)
 	f.Add([]byte{0})
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, buf []byte) {
@@ -93,7 +114,11 @@ func FuzzDecodeNeverPanics(f *testing.F) {
 		}
 		// Anything that decodes must survive being written back out and read
 		// again, because that is what a replica does with it.
-		again, err := Decode(env.Encode())
+		raw, err := env.Encode()
+		if err != nil {
+			t.Fatalf("a decoded envelope will not re-encode: %v", err)
+		}
+		again, err := Decode(raw)
 		if err != nil {
 			t.Fatalf("re-encoded envelope will not decode: %v", err)
 		}
@@ -147,5 +172,34 @@ func TestMemoryBusDeliversToEverySubscriberIncludingThePublisher(t *testing.T) {
 	}
 	if len(b) != 2 {
 		t.Fatalf("the remaining subscriber got %d messages, want 2", len(b))
+	}
+}
+
+// lib0's decoder is more permissive than its encoder: it will read an integer
+// above 2^53-1, which the encoder refuses to write. An envelope carrying one
+// used to decode and then encode to a one-byte buffer, silently - every replica
+// would log "undecodable" with nothing saying why.
+//
+// The seed is the one the fuzzer found.
+func TestAnOriginTooLargeToEncodeIsRefused(t *testing.T) {
+	// version 0, then a varUint of seven continuation bytes that reads as
+	// 27,362,913,877,714,637 - three times what lib0 will write - then kind 2
+	// and an empty payload.
+	buf := []byte{0x00, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0xcd, 0x30, 0x02, 0x00}
+	if _, err := Decode(buf); !errors.Is(err, ErrOriginOutOfRange) {
+		t.Fatalf("Decode returned %v, want ErrOriginOutOfRange", err)
+	}
+	// And building one by hand is an error rather than a short buffer.
+	if _, err := (Envelope{Origin: lib0.MaxSafeInteger + 1, Kind: KindUpdate}).Encode(); err == nil {
+		t.Error("Encode accepted an origin it cannot write")
+	}
+	// The largest legal origin still round-trips, so the check is not off by one.
+	raw, err := (Envelope{Origin: lib0.MaxSafeInteger, Kind: KindUpdate, Payload: []byte{1}}).Encode()
+	if err != nil {
+		t.Fatalf("the largest legal origin: %v", err)
+	}
+	got, err := Decode(raw)
+	if err != nil || got.Origin != lib0.MaxSafeInteger {
+		t.Errorf("MaxSafeInteger round-tripped to %d (err %v)", got.Origin, err)
 	}
 }

@@ -458,3 +458,49 @@ func collector(t *testing.T, reg *prometheus.Registry, name string) prometheus.C
 	g.Set(total)
 	return g
 }
+
+// Close is given a deadline, and it has to honour it. A receiver that is not
+// answering is exactly when shutdown matters: in Kubernetes the process is
+// SIGKILLed at the end of terminationGracePeriodSeconds, so a Close that
+// overruns turns "the webhook endpoint is down" into "rolling deploys lose the
+// flush window".
+//
+// The failure this guards was real. Close cancelled its workers on timeout, but
+// the request in flight was built from context.Background, so cancelling did
+// not abort it - and the workers went on to drain the rest of the queue, paying
+// one request timeout per event.
+func TestCloseHonoursItsDeadline(t *testing.T) {
+	// A receiver that accepts the connection and never answers, so every
+	// delivery costs the full request timeout.
+	rec := newReceiver(t)
+	rec.hold = make(chan struct{})
+	defer close(rec.hold)
+
+	w, _ := newWebhook(t, hook.Config{
+		URL: rec.srv.URL, Queue: 256, Workers: 4,
+		Timeout: 30 * time.Second, Retries: 2, Backoff: time.Second,
+	})
+	for range 200 {
+		w.Emit(sampleEvent())
+	}
+	// Let the workers get into a request, so Close is interrupting one rather
+	// than finding them idle.
+	rec.wait(t, 1)
+
+	const deadline = time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	started := time.Now()
+	err := w.Close(ctx)
+	took := time.Since(started)
+
+	if err == nil {
+		t.Fatal("Close reported success against a receiver that never answered")
+	}
+	// Generous, because the assertion is "it gave up near its deadline", not a
+	// benchmark: without the fix this took the request timeout per queued
+	// event.
+	if took > deadline+3*time.Second {
+		t.Errorf("Close took %v with a %v deadline", took, deadline)
+	}
+}

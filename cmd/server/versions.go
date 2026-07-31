@@ -158,7 +158,14 @@ func takeVersion(manager *room.Manager, documents *store.Store, log *slog.Logger
 			written, err = versionStored(ctx, documents, name, label)
 		}
 		switch {
-		case errors.Is(err, room.ErrNoVersioning), errors.Is(err, room.ErrNoDocument):
+		case errors.Is(err, room.ErrNoDocument):
+			// Not the same thing as "no history is kept", and saying so sent an
+			// operator looking at the wrong thing: a server with versioning
+			// working perfectly answered 503 "this server keeps no version
+			// history" for a name that simply does not exist.
+			http.Error(w, "no such document", http.StatusNotFound)
+			return
+		case errors.Is(err, room.ErrNoVersioning):
 			http.Error(w, "this server keeps no version history", http.StatusServiceUnavailable)
 			return
 		case err != nil:

@@ -337,6 +337,7 @@ func (a *Awareness) RemoveClients(clients []uint64, now time.Time) ([]uint64, []
 // minute of being a ghost. y-protocols does the same thing for the same reason:
 // removeAwarenessStates only bumps the clock of the *local* client
 // (awareness.js:175-181), never of the peers it is dropping.
+
 // forgetOldest drops removed entries until the map is under limit.
 func (a *Awareness) forgetOldest(limit int) {
 	for len(a.entries) >= limit {
@@ -358,6 +359,8 @@ func (a *Awareness) forgetOldest(limit int) {
 	}
 }
 
+// remove is the shared half of Sweep and RemoveClients; see the note above
+// forgetOldest for why the clock is left where it is.
 func (a *Awareness) remove(clients []uint64, now time.Time) ([]uint64, []byte, error) {
 	for _, id := range clients {
 		e := a.entries[id]

@@ -47,8 +47,8 @@ type Version struct {
 
 // SaveVersion stores a version, unless one would say nothing new.
 //
-// Two conditions, both in the one statement, and both there because every
-// replica holding a document runs its own timer:
+// Two conditions, both there because every replica holding a document runs its
+// own timer:
 //
 //   - nothing is written when a version newer than minAge already exists, so
 //     three replicas on the same document produce one version per interval
@@ -56,16 +56,34 @@ type Version struct {
 //   - nothing is written when the newest version has the same state vector, so
 //     a document nobody is editing does not accumulate identical copies.
 //
-// Doing it as a condition on the insert rather than a read followed by a write
-// is what makes it safe between replicas: there is no window between deciding
-// and writing.
+// The advisory lock is what makes those hold between replicas, and it is not
+// decoration. `INSERT ... WHERE NOT EXISTS` looks atomic and is not: under READ
+// COMMITTED two concurrent statements each evaluate the subquery against their
+// own snapshot, neither sees the other's uncommitted row, and both insert.
+// Demonstrated against this schema with two sessions, which produced two rows.
+//
+// The damage was not corruption but retention: duplicates eat the budget, so
+// "keep the last 24" on a three-replica cluster silently becomes "keep the last
+// eight moments". Compact takes the same lock, for the same reason (C2, C6).
 //
 // It reports whether a row was written.
 func (s *Store) SaveVersion(ctx context.Context, id UUID, v Version, minAge time.Duration) (bool, error) {
 	if len(v.Payload) == 0 {
 		return false, errors.New("store: a version needs a payload")
 	}
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: save version: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	// Per document, released at commit. Two replicas versioning two different
+	// documents never wait for each other.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))`, id); err != nil {
+		return false, fmt.Errorf("store: save version lock: %w", err)
+	}
+
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO doc_versions (doc_id, state_vector, payload, label)
 		 SELECT $1, $2, $3, $4
 		  WHERE EXISTS (SELECT 1 FROM documents WHERE id = $1)
@@ -78,7 +96,11 @@ func (s *Store) SaveVersion(ctx context.Context, id UUID, v Version, minAge time
 	if err != nil {
 		return false, fmt.Errorf("store: save version: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	written := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: save version: %w", err)
+	}
+	return written, nil
 }
 
 // ListVersions returns a document's versions, newest first, without their

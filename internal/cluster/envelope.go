@@ -48,6 +48,10 @@ var (
 	// ErrTrailingBytes means an envelope carried bytes after a complete message,
 	// the same stance internal/protocol takes on client frames.
 	ErrTrailingBytes = errors.New("cluster: trailing bytes after envelope")
+	// ErrOriginOutOfRange means the origin is larger than lib0 can encode. The
+	// format cannot carry it, so accepting it would mean holding a value that
+	// cannot be written back out - see Decode.
+	ErrOriginOutOfRange = errors.New("cluster: origin out of range")
 )
 
 // An Envelope is one message between replicas.
@@ -63,13 +67,23 @@ type Envelope struct {
 }
 
 // Encode returns the wire form of an envelope.
-func (e Envelope) Encode() []byte {
+//
+// It returns an error rather than bytes-and-hope. lib0 refuses an integer above
+// 2^53-1, and the encoder records that instead of raising it - so an origin out
+// of range used to come back as a one-byte buffer that every replica logged as
+// undecodable, with nothing anywhere saying why. Found by the fuzzer: it
+// produced an envelope that decoded and then would not survive being written
+// back out.
+func (e Envelope) Encode() ([]byte, error) {
 	enc := lib0.NewEncoderSize(len(e.Payload) + 16)
 	enc.WriteVarUint(envelopeVersion)
 	enc.WriteVarUint(e.Origin)
 	enc.WriteVarUint(uint64(e.Kind))
 	enc.WriteVarUint8Array(e.Payload)
-	return enc.Bytes()
+	if err := enc.Err(); err != nil {
+		return nil, fmt.Errorf("cluster: encode envelope: %w", err)
+	}
+	return enc.Bytes(), nil
 }
 
 // Decode parses one envelope. The payload aliases buf.
@@ -85,6 +99,13 @@ func Decode(buf []byte) (Envelope, error) {
 	origin, err := d.ReadVarUint()
 	if err != nil {
 		return Envelope{}, err
+	}
+	if origin > lib0.MaxSafeInteger {
+		// lib0's decoder is more permissive than its encoder. Accepting a value
+		// here that Encode cannot write would leave the rest of the system
+		// holding an envelope it can never relay, so it is refused at the door.
+		// NewNodeID masks its ids for the same reason.
+		return Envelope{}, fmt.Errorf("%w: %d", ErrOriginOutOfRange, origin)
 	}
 	kind, err := d.ReadVarUint()
 	if err != nil {

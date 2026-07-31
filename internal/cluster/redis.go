@@ -102,7 +102,11 @@ func (r *Redis) channel(room string) string { return r.prefix + ":room:" + room 
 func (r *Redis) Publish(ctx context.Context, room string, env Envelope) error {
 	ctx, cancel := context.WithTimeout(ctx, publishTimeout)
 	defer cancel()
-	return r.client.Publish(ctx, r.channel(room), env.Encode()).Err()
+	raw, err := env.Encode()
+	if err != nil {
+		return err
+	}
+	return r.client.Publish(ctx, r.channel(room), raw).Err()
 }
 
 type subscription struct {

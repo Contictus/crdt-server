@@ -41,6 +41,12 @@ type Snapshot struct {
 	Clients int
 	// Resident says where this came from.
 	Resident bool
+	// Skipped counts stored updates that would not apply. It is almost always
+	// zero; anything else means this reading of the document is missing rows,
+	// and a backup taken from it is missing them too. The room says so in its
+	// log when it loads a document, and this is how the read path says the same
+	// thing rather than handing back quietly incomplete bytes.
+	Skipped int
 }
 
 // readCmd asks the room for a snapshot. Like every other command it goes
@@ -127,12 +133,22 @@ func Fetch(ctx context.Context, p Persistence, name string, sv []byte) (Snapshot
 			return Snapshot{}, fmt.Errorf("snapshot would not apply: %w", err)
 		}
 	}
+	skipped := 0
 	for _, u := range stored.Updates {
 		// Same argument as load: one unusable row must not make the document
-		// unreadable, and the room would skip it too.
-		_ = doc.ApplyUpdate(u)
+		// unreadable, and the room would skip it too. Unlike load, there is no
+		// logger here - so the count travels back with the snapshot and the
+		// caller says something about it.
+		if err := doc.ApplyUpdate(u); err != nil {
+			skipped++
+		}
 	}
-	return encodeSnapshot(doc, sv)
+	snapshot, err := encodeSnapshot(doc, sv)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.Skipped = skipped
+	return snapshot, nil
 }
 
 // Resident returns the room holding a document, or nil if none does. It does

@@ -279,6 +279,13 @@ func New(cfg Config) *Room {
 		r.pub = make(chan pubJob, publishQueue)
 		r.pubDone = make(chan struct{})
 	}
+	if cfg.Versions != nil && cfg.Store == nil {
+		// Versions are written through the persist goroutine, which only exists
+		// when there is a store, so this combination keeps no history at all.
+		// Saying so beats a server that looks configured and records nothing.
+		r.log.Error("version history is configured without a store, so no versions will be kept")
+		r.versions = nil
+	}
 	r.lastEmpty = cfg.Now()
 	return r
 }

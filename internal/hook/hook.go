@@ -76,11 +76,3 @@ type Event struct {
 type Sink interface {
 	Emit(Event)
 }
-
-// Nop returns a sink that discards everything, so a room without hooks
-// configured does not have to check for nil on every tick.
-func Nop() Sink { return nopSink{} }
-
-type nopSink struct{}
-
-func (nopSink) Emit(Event) {}

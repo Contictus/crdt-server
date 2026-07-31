@@ -75,6 +75,14 @@ func getDocument(manager *room.Manager, documents room.Persistence, log *slog.Lo
 			return
 		}
 
+		if snapshot.Skipped > 0 {
+			// The document was read with rows missing. Whoever asked is very
+			// possibly taking a backup, and a backup that is quietly short a
+			// few updates is worse than one that fails.
+			log.Error("serving a document with unreadable rows skipped",
+				"document", name, "skipped", snapshot.Skipped)
+		}
+
 		// The state vector is the version, so it is the ETag. Two servers
 		// holding the same document produce the same one, which is what makes
 		// it usable behind a load balancer.
@@ -260,10 +268,13 @@ type document struct {
 	// Resident says whether this came from a room on this node or from the
 	// database, and Clients is the connections that room had; it is omitted
 	// when there was no room.
-	Resident bool       `json:"resident"`
-	Clients  *int       `json:"clients,omitempty"`
-	Bytes    int        `json:"bytes"`
-	Roots    []rootView `json:"roots"`
+	Resident bool `json:"resident"`
+	Clients  *int `json:"clients,omitempty"`
+	Bytes    int  `json:"bytes"`
+	// Skipped counts stored updates that would not apply when this reading was
+	// assembled. Anything but zero means the document is missing rows.
+	Skipped int        `json:"skipped"`
+	Roots   []rootView `json:"roots"`
 	// Subdocs are the guids of the subdocuments this document references.
 	//
 	// They are separate documents on this server, each under its own guid as
@@ -305,6 +316,7 @@ func describe(name string, snapshot room.Snapshot) (document, error) {
 		StateVector: base64.StdEncoding.EncodeToString(snapshot.StateVector),
 		Resident:    snapshot.Resident,
 		Bytes:       len(snapshot.Update),
+		Skipped:     snapshot.Skipped,
 		Roots:       []rootView{},
 		Subdocs:     doc.Subdocs(),
 	}

@@ -97,6 +97,40 @@ func TestFetchReadsTheStoreWithoutARoom(t *testing.T) {
 	}
 }
 
+// A stored row that will not apply is skipped rather than making the document
+// unreadable - but skipping it silently would hand back a document that is
+// quietly missing edits, and whoever asked is very possibly taking a backup.
+func TestFetchReportsRowsItCouldNotApply(t *testing.T) {
+	updates := scenarioUpdates(t, "text-three-client-interleaved")
+	// Two rows of rubbish among the real ones.
+	corrupt := append([][]byte{}, updates...)
+	corrupt = append(corrupt, []byte("this is not an update"), []byte{0xff, 0xff, 0xff})
+	fake := &fakeStore{doc: store.Document{Updates: corrupt}}
+
+	snapshot, err := Fetch(context.Background(), fake, "notes", nil)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if snapshot.Skipped != 2 {
+		t.Errorf("Skipped = %d, want 2", snapshot.Skipped)
+	}
+	// And the readable rows still made it, because one bad row must not make
+	// the document unopenable.
+	got := crdt.NewDoc(1)
+	if err := got.ApplyUpdate(snapshot.Update); err != nil {
+		t.Fatal(err)
+	}
+	if docPrint(t, got) != canonical(t, updates) {
+		t.Error("the readable rows did not survive the corrupt ones")
+	}
+
+	// A clean document reports zero, so the field is a signal rather than noise.
+	clean := &fakeStore{doc: store.Document{Updates: updates}}
+	if snapshot, err := Fetch(context.Background(), clean, "notes", nil); err != nil || snapshot.Skipped != 0 {
+		t.Errorf("a clean document reported Skipped=%d (err %v)", snapshot.Skipped, err)
+	}
+}
+
 // A name that was never written is not an empty document. A caller asking for
 // something that does not exist wants to hear so.
 func TestFetchingAMissingDocument(t *testing.T) {

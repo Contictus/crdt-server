@@ -48,7 +48,10 @@ func (m *Memory) Publish(_ context.Context, room string, env Envelope) error {
 	// The payload is round-tripped through the wire form rather than handed over
 	// as a Go value. Anything the encoding cannot carry then fails in these tests
 	// instead of only under Redis.
-	raw := env.Encode()
+	raw, err := env.Encode()
+	if err != nil {
+		return err
+	}
 	decoded, err := Decode(raw)
 	if err != nil {
 		return err
