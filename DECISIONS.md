@@ -875,6 +875,88 @@ runbook tells the reader to check it too.
 The per-document backup and restore is not documented on trust either: it is
 what `TestADocumentCanBeBackedUpAndRestored` performs on every CI run.
 
+### D92. The admin listener gets a token, because it stopped being read-only
+The original argument for no authentication was that the deployment decides who
+can reach the port ([D65]), and it was sound while the surface was metrics,
+stats and pprof. Then it grew `DELETE`, and then `POST` ([D89]), and now a
+request that reaches it can rewrite any document on the server. Network
+isolation is still the first control, but it became the *only* control on a
+destructive surface, and one misconfigured Service or one forwarded port is the
+whole distance between "internal" and "anybody". Found while scoring the
+project, not by an incident.
+
+`-admin-token` is a shared secret checked as a bearer credential, deliberately
+not the JWT machinery: those tokens are per-document capabilities minted for
+editors ([D60]), and "may administer this server" is not a document capability.
+A shared secret is the right shape for a surface whose users are an operator, a
+scrape job and a backup script.
+
+Three details:
+
+  - **Everything except `/healthz`.** A load balancer probing liveness cannot
+    hold an operator credential, and the answer is one word that says nothing
+    about the documents. It is registered on an outer mux rather than excepted
+    inside the check, so "what is open" is one line to read instead of a
+    condition to reason about. `/metrics` is *not* excepted - Prometheus can
+    send a header, and pprof next door prints the command line the process was
+    started with.
+  - **Header only, never a query parameter.** A token in a URL ends up in
+    access logs, browser history and the `Referer` of anything the response
+    links to. The WebSocket endpoint accepts `?token=` because a browser cannot
+    set a header on a WebSocket handshake; nothing on this listener has that
+    excuse.
+  - **Compared as SHA-256 digests.** `subtle.ConstantTimeCompare` returns early
+    on a length mismatch, so comparing the raw strings would leak the secret's
+    length. Digesting first makes every comparison fixed-width.
+
+Rejected: refusing to start without a token. A laptop running the demo has
+nothing to protect and the listener defaults to localhost, so it is a warning at
+startup, the same treatment running without a signing secret gets ([D64]).
+
+### D93. X-Forwarded-For is ignored unless a proxy is named
+Nothing in this server read a peer address at all, so an incident had no answer
+to "where is it coming from" and `-max-conns` was a limit one client could reach
+alone.
+
+The address has to be established carefully, because the header that usually
+carries it is written by the client: `X-Forwarded-For` is a request header like
+any other, and anyone can send one saying anything. Trusting it unconditionally
+would let an attacker pick their own identity - and a per-address limit an
+attacker can opt out of is *worse* than none, because it costs the work and
+gives the false impression of a control.
+
+So the header is read only when the machine on the other end of the socket is a
+proxy the operator named in `-trusted-proxies`, and the address taken is the
+**rightmost** entry that is not itself trusted: the last address a machine we
+trust actually saw. Taking the leftmost is the classic mistake - that end of the
+list is the part the client wrote. A hop that will not parse stops the walk,
+because the chain cannot be reasoned about past it.
+
+`loopback` and `private` are named shorthands for the two real deployments,
+because the alternative is every operator writing out the same RFC 1918 blocks
+and one of them getting it wrong. A malformed entry is an error at startup, not
+a silently narrower set.
+
+The address goes in the logs and never in a metric label: a label taken from a
+peer address makes the endpoint's cardinality the number of addresses on the
+internet ([D67]).
+
+### D94. The per-address cap is off by default, unlike the rate limits
+The rate limits ship on ([D79]) on the argument that a limit which only catches
+a client that has gone wrong should not need configuring. The same argument does
+not carry here, and the difference is NAT.
+
+A rate limit is per connection, so its false-positive case is one misbehaving
+client. A per-address cap is per *address*, and an office, a school or a mobile
+carrier is one address to this server - a live default would be a live default
+on how many colleagues may edit at once, breaking exactly the collaborative case
+this server exists for. The deployment knows its clients; the Kubernetes
+manifests set it to 100.
+
+There is a matching footgun the server warns about: behind a load balancer with
+no `-trusted-proxies`, every client looks like the load balancer, so the cap
+would apply to the whole deployment at once.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

@@ -66,6 +66,54 @@ Two things a connected client could otherwise do without permission, both bounde
 
 For every one of these, zero means the default and a negative value means no limit.
 
+`-max-conns-per-ip` bounds one address, because `-max-conns` on its own is a limit a single
+client can reach alone — which makes "the node is full" something one actor decides. It is off
+by default and the reason is NAT: an office, a school or a mobile carrier is *one address* to
+this server, so a live default would be a live default on how many colleagues may edit at once.
+The deployment knows its clients; the Kubernetes manifests set it.
+
+### Who is connecting
+
+Client addresses appear on every connection log line and on every refusal, so an incident has an
+answer to "where is this coming from". Addresses are never a metric label — that would make the
+endpoint's cardinality the number of addresses on the internet.
+
+Behind a load balancer, tell the server which hops to believe:
+
+```
+-trusted-proxies=private          # or loopback, or 10.0.0.0/8,192.0.2.7
+```
+
+**Without this the `X-Forwarded-For` header is ignored entirely**, and that is deliberate. It is
+a request header like any other — anyone can send one saying anything — so a server reached
+directly must not read it, or clients choose their own identity and `-max-conns-per-ip` becomes
+a control an attacker opts out of. With trusted proxies configured, the header is read only when
+the machine on the other end of the socket is one of them, and the address taken is the
+*rightmost* entry that is not itself trusted: the last address a machine we trust actually saw.
+The leftmost entry is the part the client wrote.
+
+### The admin listener
+
+`-admin-token` requires `Authorization: Bearer <token>` on everything on the admin address
+except `/healthz`, which stays open so a load balancer can probe liveness without holding an
+operator credential.
+
+```bash
+ycollab -admin-token "$(openssl rand -hex 32)"
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:6060/documents/my-doc
+```
+
+It is not the JWT machinery clients use: those tokens are per-document capabilities minted for
+editors, and "may administer this server" is not a document capability. Only the header is
+accepted, never a query parameter — a token in a URL ends up in access logs, browser history and
+the `Referer` of anything the response links to. The WebSocket endpoint accepts `?token=` because
+a browser cannot set a header on a WebSocket handshake; nothing here has that excuse.
+
+Without the flag the endpoints stay open and the server says so at startup. That was defensible
+while the listener was read-only. It now serves `POST` and `DELETE`, so a request that reaches it
+can rewrite or destroy any document — network isolation is still the first control, but it should
+not be the only one.
+
 ### More than one replica
 
 `-redis-url` makes a process one replica of a cluster rather than a server on its own. Replicas

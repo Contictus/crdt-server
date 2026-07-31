@@ -40,6 +40,9 @@ stringData:
   # Replace this. A server started with a secret from a git repository is an
   # open server with extra steps.
   jwt-secret: "replace-me-with-at-least-32-random-bytes"
+  # Guards the admin listener, which can read, overwrite and delete every
+  # document. Replace this one too - `openssl rand -hex 32`.
+  admin-token: "replace-me-with-at-least-32-random-bytes"
 
 ---
 apiVersion: apps/v1
@@ -86,6 +89,15 @@ spec:
             # server caps how many documents or connections it will hold.
             - -max-rooms=2000
             - -max-conns=5000
+            # And a bound per client address, so one actor cannot reach
+            # -max-conns alone. Generous, because a real person has several
+            # tabs and everybody behind one office NAT shares an address.
+            - -max-conns-per-ip=100
+            # The ingress controller is inside the cluster network, so its
+            # X-Forwarded-For is worth believing. Without this the header is
+            # ignored and every client would look like the ingress - which
+            # would make the cap above a cap on the whole deployment.
+            - -trusted-proxies=private
             - -log-level=info
           env:
             - name: YCOLLAB_ORIGINS
@@ -96,6 +108,12 @@ spec:
               valueFrom: { secretKeyRef: { name: ycollab, key: redis-url } }
             - name: YCOLLAB_JWT_SECRET
               valueFrom: { secretKeyRef: { name: ycollab, key: jwt-secret } }
+            # The admin listener serves POST and DELETE on every document, so
+            # the Service below not naming the port is the first control and
+            # this is the second. Prometheus needs it too: give the scrape job
+            # an `authorization` block carrying the same value.
+            - name: YCOLLAB_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: ycollab, key: admin-token } }
           ports:
             - { name: ws, containerPort: 8080 }
             - { name: admin, containerPort: 6060 }

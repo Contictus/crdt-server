@@ -87,6 +87,11 @@ func run() error {
 		webhookRetries = flag.Int("webhook-retries", hook.DefaultRetries, "how many times a failed delivery is retried")
 		webhookQueue   = flag.Int("webhook-queue", hook.DefaultQueue, "events that may be waiting for delivery before they start being dropped")
 
+		maxConnsPerIP  = flag.Int("max-conns-per-ip", 0, "cap on concurrent connections from one client address; 0 means unlimited")
+		trustedProxies = flag.String("trusted-proxies", os.Getenv("YCOLLAB_TRUSTED_PROXIES"), `comma-separated CIDR blocks whose X-Forwarded-For header is believed, or "loopback" or "private". Empty uses the socket's peer address and ignores the header, which is the only safe default when clients reach this server directly`)
+
+		adminToken = flag.String("admin-token", os.Getenv("YCOLLAB_ADMIN_TOKEN"), "require this token as an Authorization: Bearer header on the admin endpoints; empty leaves them open to anyone who can reach the address")
+
 		adminAddr = flag.String("admin-addr", envOr("YCOLLAB_ADMIN_ADDR", "127.0.0.1:6060"), "address for /metrics, /statsz and /debug/pprof; empty disables them")
 		pprof     = flag.Bool("pprof", true, "serve /debug/pprof on the admin address")
 	)
@@ -222,15 +227,30 @@ func run() error {
 		return err
 	}
 
+	proxies, err := gateway.ParseProxies(splitList(*trustedProxies))
+	if err != nil {
+		return err
+	}
+	if proxies.Any() {
+		log.Info("believing X-Forwarded-For from the configured proxies", "max_conns_per_ip", *maxConnsPerIP)
+	} else if *maxConnsPerIP > 0 {
+		// Worth saying: behind a proxy with no -trusted-proxies, every client
+		// looks like the proxy, so the per-address cap would be a cap on the
+		// whole deployment.
+		log.Warn("-max-conns-per-ip is counting socket peer addresses; set -trusted-proxies if this server is behind a load balancer")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprintln(w, "ok")
 	})
 	mux.Handle("/", gateway.New(gateway.Config{
-		Rooms:    manager,
-		Origins:  splitList(*origins),
-		MaxConns: *maxConns,
+		Rooms:         manager,
+		Origins:       splitList(*origins),
+		MaxConns:      *maxConns,
+		MaxConnsPerIP: *maxConnsPerIP,
+		Proxies:       proxies,
 		Rate: gateway.Rate{
 			Messages:     *rateMessages,
 			MessageBurst: *rateMessageBurst,
@@ -242,7 +262,7 @@ func run() error {
 		Logger:    log,
 	}))
 
-	adminSrv, err := startAdmin(*adminAddr, *pprof, registry, manager, documents, log)
+	adminSrv, err := startAdmin(*adminAddr, *adminToken, *pprof, registry, manager, documents, log)
 	if err != nil {
 		return err
 	}
@@ -376,7 +396,7 @@ func envOr(key, fallback string) string {
 
 func splitList(s string) []string {
 	var out []string
-	for _, part := range strings.Split(s, ",") {
+	for part := range strings.SplitSeq(s, ",") {
 		if p := strings.TrimSpace(part); p != "" {
 			out = append(out, p)
 		}

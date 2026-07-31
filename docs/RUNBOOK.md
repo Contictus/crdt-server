@@ -90,7 +90,9 @@ far beyond what a person edits by hand, and `ycollab_update_bytes` will show it.
 1008: a client could not keep up and was disconnected to protect the document.
 
 1. Is it one client or many? A single one is usually a browser tab that has been
-   backgrounded and throttled.
+   backgrounded and throttled. The connection log lines carry `ip=`, so
+   `grep 'dropping slow connection' | awk` over them answers whether it is one
+   address or a population.
 2. Many, on one replica, means that replica is CPU-bound and its rooms cannot
    drain their outbound queues. Check `ycollab_apply_duration_seconds` and the
    pod's CPU.
@@ -152,7 +154,10 @@ after their retries. Whatever the webhook feeds is missing edits.
 
 ## Common tasks
 
-All on the admin listener, which defaults to `127.0.0.1:6060`.
+All on the admin listener, which defaults to `127.0.0.1:6060`. If the server was
+started with `-admin-token`, every one of these needs the header — add
+`-H "Authorization: Bearer $YCOLLAB_ADMIN_TOKEN"` to each `curl` below. Only
+`/healthz` is open without it.
 
 ```bash
 ADMIN=127.0.0.1:6060
@@ -177,6 +182,29 @@ curl -s -X POST --data-binary @my-doc.bin $ADMIN/documents/my-doc
 `POST` **merges**, it does not replace. These are CRDT updates: applying one adds
 what it carries to what is there. Restoring over a document that has moved on
 gives the union of the two. `DELETE` first when that is not what you want.
+
+## One address is misbehaving
+
+`ycollab_denied_total{reason="too_many_connections"}` says the node is full;
+`{reason="too_many_connections_per_ip"}` says one address hit its own limit.
+Neither carries the address — that would make the metric's cardinality the
+number of addresses on the internet — so the address comes from the logs:
+
+```bash
+kubectl logs -l app=ycollab --since=15m \
+  | grep -E 'refusing a connection|dropping slow connection' \
+  | grep -o 'ip=[^ ]*' | sort | uniq -c | sort -rn | head
+```
+
+If one address dominates, `-max-conns-per-ip` is the lever; it is off by
+default and set to 100 in the manifests. Before believing the numbers, check
+that `-trusted-proxies` is set for your topology — behind a load balancer
+without it, every client is logged as the load balancer and the counts are
+meaningless.
+
+Blocking belongs upstream, in the ingress or the firewall. This server slows and
+refuses; it does not keep a ban list, and a per-address block list in a process
+that gets rolled every deploy is not one.
 
 ## Backup and restore
 

@@ -115,7 +115,7 @@ func startRetention(ctx context.Context, documents *store.Store, keep time.Durat
 // separate listener means the deployment decides who can reach them - through a
 // bind address, a firewall rule or, in Kubernetes, simply not naming the port
 // in the Service.
-func startAdmin(addr string, withPprof bool, registry *prometheus.Registry, manager *room.Manager, documents *store.Store, log *slog.Logger) (*http.Server, error) {
+func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registry, manager *room.Manager, documents *store.Store, log *slog.Logger) (*http.Server, error) {
 	if addr == "" {
 		log.Info("no -admin-addr: metrics, stats and pprof are not served")
 		return nil, nil
@@ -141,10 +141,6 @@ func startAdmin(addr string, withPprof bool, registry *prometheus.Registry, mana
 			log.Debug("could not write stats", "err", err)
 		}
 	})
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte("ok\n"))
-	})
 	// Reading works with or without a database: a resident room can be read
 	// from memory, and without a store that is the only copy there is. A typed
 	// nil would satisfy the interface and then panic, so the conversion is
@@ -164,6 +160,20 @@ func startAdmin(addr string, withPprof bool, registry *prometheus.Registry, mana
 		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	}
 
+	// /healthz stays outside the token check, and everything else goes behind
+	// it. A load balancer probing liveness cannot be expected to hold an
+	// operator credential, and the answer is one word that says nothing about
+	// the documents. Registering it on the outer mux rather than adding an
+	// exception inside the check keeps "what is open" to one line somebody can
+	// read, instead of a condition somebody has to reason about.
+	outer := http.NewServeMux()
+	outer.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok\n"))
+	})
+	outer.Handle("/", requireToken(token, mux))
+	warnIfOpen(token, addr, log)
+
 	// Listening here rather than inside the goroutine, so a port that is already
 	// taken is an error at startup instead of a line in the log that nobody
 	// reads.
@@ -172,7 +182,7 @@ func startAdmin(addr string, withPprof bool, registry *prometheus.Registry, mana
 		return nil, err
 	}
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           outer,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -65,6 +66,22 @@ type Config struct {
 	// y-websocket client to come back rather than to give up.
 	MaxConns int
 
+	// MaxConnsPerIP caps how many connections one client address may hold.
+	// Zero means no cap. Without it, MaxConns is a limit one address can reach
+	// on its own, which turns "the node is full" into something a single client
+	// decides.
+	//
+	// It stays off by default, unlike the rate limits, and the reason is NAT: an
+	// office, a school or a mobile carrier is one address to this server, so a
+	// live default would be a live default on how many colleagues may edit at
+	// once. The deployment knows its clients; the Kubernetes manifests set it.
+	MaxConnsPerIP int
+
+	// Proxies are the addresses whose X-Forwarded-For header is believed. The
+	// zero value trusts none, so the socket's peer address is used. See
+	// clientip.go for why this must be opt-in.
+	Proxies Proxies
+
 	// Metrics is where connection counts and traffic are reported. Nil becomes
 	// a set registered nowhere, so this package never checks for one.
 	Metrics *metrics.Metrics
@@ -98,6 +115,13 @@ type Handler struct {
 	nextID  atomic.Uint64
 	// open counts connections currently being served, for MaxConns.
 	open atomic.Int64
+
+	// perIP counts connections by client address, for MaxConnsPerIP. It is a
+	// map rather than a counter because the question is per address, and it is
+	// pruned to zero so an address that goes away leaves nothing behind - the
+	// alternative is a map that grows with every address that ever connected.
+	ipMu  sync.Mutex
+	perIP map[string]int
 }
 
 // New returns a handler. Rooms is required.
@@ -120,7 +144,39 @@ func New(cfg Config) *Handler {
 	if cfg.Metrics == nil {
 		cfg.Metrics = metrics.Nop()
 	}
-	return &Handler{cfg: cfg, log: cfg.Logger, metrics: cfg.Metrics}
+	return &Handler{
+		cfg:     cfg,
+		log:     cfg.Logger,
+		metrics: cfg.Metrics,
+		perIP:   make(map[string]int),
+	}
+}
+
+// claimIP reserves a slot for one address, reporting whether there was one.
+func (h *Handler) claimIP(ip string) bool {
+	if h.cfg.MaxConnsPerIP <= 0 {
+		return true
+	}
+	h.ipMu.Lock()
+	defer h.ipMu.Unlock()
+	if h.perIP[ip] >= h.cfg.MaxConnsPerIP {
+		return false
+	}
+	h.perIP[ip]++
+	return true
+}
+
+func (h *Handler) releaseIP(ip string) {
+	if h.cfg.MaxConnsPerIP <= 0 {
+		return
+	}
+	h.ipMu.Lock()
+	defer h.ipMu.Unlock()
+	if n := h.perIP[ip] - 1; n > 0 {
+		h.perIP[ip] = n
+	} else {
+		delete(h.perIP, ip)
+	}
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -130,18 +186,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The cap is claimed before the upgrade and released when the handler
-	// returns, so a connection that is refused never counts against it.
+	ip := h.cfg.Proxies.ClientIP(r)
+
+	// The caps are claimed before the upgrade and released when the handler
+	// returns, so a connection that is refused never counts against them.
 	if h.cfg.MaxConns > 0 {
 		if n := h.open.Add(1); n > int64(h.cfg.MaxConns) {
 			h.open.Add(-1)
 			h.metrics.Denied.WithLabelValues("too_many_connections").Inc()
-			h.log.Warn("refusing a connection: at the limit", "limit", h.cfg.MaxConns)
+			h.log.Warn("refusing a connection: at the limit", "limit", h.cfg.MaxConns, "ip", ip)
 			http.Error(w, "too many connections", http.StatusServiceUnavailable)
 			return
 		}
 		defer h.open.Add(-1)
 	}
+	// The per-address cap comes second, so an address that is over its own
+	// limit is reported as that rather than as the node being full.
+	if !h.claimIP(ip) {
+		h.metrics.Denied.WithLabelValues("too_many_connections_per_ip").Inc()
+		h.log.Warn("refusing a connection: address at its limit", "limit", h.cfg.MaxConnsPerIP, "ip", ip)
+		http.Error(w, "too many connections from this address", http.StatusServiceUnavailable)
+		return
+	}
+	defer h.releaseIP(ip)
 
 	// Authorising before the upgrade means a rejected request never reaches a
 	// room, so a bad token cannot even create one.
@@ -167,6 +234,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// because the text can name a document: a metric with a document name in
 		// it is a metric with unbounded cardinality.
 		h.metrics.Denied.WithLabelValues("unauthorized").Inc()
+		// The address is on this line and not in the metric: it is what an
+		// operator needs to answer "who is doing this", and a label would make
+		// the metric's cardinality the number of addresses on the internet.
+		h.log.Warn("refusing a connection: unauthorized", "room", name, "ip", ip)
 		h.reject(r.Context(), ws, authErr)
 		return
 	}
@@ -186,7 +257,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log := h.log.With("room", name, "conn", c.id, "sub", grant.Subject, "write", grant.Write)
+	log := h.log.With("room", name, "conn", c.id, "ip", ip, "sub", grant.Subject, "write", grant.Write)
 	go h.writePump(c, log)
 	h.readPump(ctx, c, rm, newLimiter(h.cfg.Rate, nil), log)
 
