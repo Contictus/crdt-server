@@ -1575,6 +1575,28 @@ interval then blocked re-measuring for fifteen seconds. Twenty rooms under load
 reported zero bytes. The interval now throttles re-measuring a weight that is
 already known, and never blocks learning one.
 
+### D133. A missing bucket is its own error, because 404 means two things
+Found by accident: the tests were run against a MinIO whose bucket had been
+wiped by its tmpfs, and every failure read `blob: no such object`. The bucket did
+not exist. S3 answers both cases with a 404 and only the XML body says which,
+and the client was not reading it.
+
+The message was the small half. `ErrNotFound` is *acted on*: `Delete` treats a
+missing object as success, because the caller wanted it gone and it is gone. So
+a mistyped `-s3-bucket` meant every write failed loudly and **every delete
+reported success**, forever, while nothing was ever removed. That is the shape
+of bug that is found a year later by a storage bill.
+
+`ErrNoBucket` is now distinct, the message names the bucket rather than a key
+nobody asked about, and `Delete` only swallows a 404 that is actually a missing
+object. Both guards were broken to check the test goes red; the delete one fails
+with `err = <nil>, want ErrNoBucket`, which is the silent success stated plainly.
+
+`Exists` still cannot tell the two apart, and says so where it is defined:
+it uses HEAD, S3 answers HEAD with no body, and the body is the only thing that
+carries the code. Nothing that decides to delete something uses `Exists`, which
+is what makes that acceptable rather than a second instance of the same bug.
+
 ### D132. The client package wraps three gaps, and refuses to wrap anything else
 A client library for a server that is already plain `y-websocket` is a bad idea
 by default: it adds a dependency, a version to keep in step, and a layer between

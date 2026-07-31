@@ -49,6 +49,21 @@ import (
 // outage.
 var ErrNotFound = errors.New("blob: no such object")
 
+// ErrNoBucket means the bucket itself is not there - a typo in -s3-bucket, a
+// bucket in another region, or one nobody created.
+//
+// S3 answers that with the same 404 it uses for a missing object, and reading
+// them as the same thing is wrong in both directions. The message points at the
+// key when the problem is the configuration, which sends whoever is debugging
+// to look for a document that was never the issue. Worse, a missing object is
+// benign in two places - Delete treats it as success, Exists reports false -
+// so a mistyped bucket would have every write fail while every delete reported
+// success, silently, forever.
+//
+// Found by running the tests against a MinIO whose bucket had been wiped: the
+// failures said "no such object" for a bucket that did not exist.
+var ErrNoBucket = errors.New("blob: no such bucket")
+
 // maxObject bounds what will be read back into memory. A snapshot is a whole
 // document, and a document that has grown past this is a problem to notice
 // rather than an allocation to make.
@@ -229,13 +244,25 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 	}
 	defer drain(resp)
 	switch resp.StatusCode {
-	case http.StatusNoContent, http.StatusOK, http.StatusNotFound:
+	case http.StatusNoContent, http.StatusOK:
 		return nil
 	}
-	return c.statusError("delete", key, resp)
+	// A 404 is where "the object was already gone" and "the bucket does not
+	// exist" arrive together. The first is success; the second means nothing
+	// was deleted and nothing ever will be, and reporting it as success is how
+	// a mistyped bucket stays undiscovered.
+	if err := c.statusError("delete", key, resp); !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return nil
 }
 
 // Exists reports whether an object is there, without reading it.
+//
+// It cannot distinguish a missing bucket from a missing object: S3 answers HEAD
+// with a status and no body, and the body is the only thing that names the
+// code. A false here therefore means "not readable", which is why nothing that
+// decides to delete something uses it.
 func (c *Client) Exists(ctx context.Context, key string) (bool, error) {
 	req, err := c.request(ctx, http.MethodHead, key, nil)
 	if err != nil {
@@ -290,11 +317,17 @@ func (c *Client) do(req *http.Request) (*http.Response, error) {
 // bodies are XML naming the code; the first two hundred bytes carry it, and
 // parsing XML to extract a string that is already legible is not worth a decoder.
 func (c *Client) statusError(op, key string, resp *http.Response) error {
-	if resp.StatusCode == http.StatusNotFound {
-		return fmt.Errorf("%w: %s", ErrNotFound, key)
-	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 	detail := strings.TrimSpace(string(body))
+	if resp.StatusCode == http.StatusNotFound {
+		// A missing bucket and a missing object are both a 404; only the body
+		// says which. HEAD has no body, so Exists cannot tell them apart and
+		// says so where it is defined.
+		if strings.Contains(detail, "<Code>NoSuchBucket</Code>") {
+			return fmt.Errorf("%w: %s", ErrNoBucket, c.cfg.Bucket)
+		}
+		return fmt.Errorf("%w: %s", ErrNotFound, key)
+	}
 	if len(detail) > 200 {
 		detail = detail[:200]
 	}

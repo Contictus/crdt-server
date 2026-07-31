@@ -259,3 +259,65 @@ func TestCredentialsComeFromTheEnvironment(t *testing.T) {
 		t.Fatalf("credentials in the environment were not used: %v", err)
 	}
 }
+
+// A bucket that does not exist is not an object that does not exist.
+//
+// S3 answers both with a 404, and reading them as the same thing sends whoever
+// is debugging a mistyped -s3-bucket to look for a document that was never the
+// problem. It is also unsafe: Delete treats a missing object as success, so a
+// bucket that is not there would have every delete report that it worked.
+//
+// This test was written after the real thing happened - the tests ran against a
+// MinIO whose bucket had been wiped, and every failure said "no such object".
+func TestAMissingBucketIsNotAMissingObject(t *testing.T) {
+	endpoint := os.Getenv(endpointEnv)
+	if endpoint == "" {
+		t.Skipf("%s is not set; start deploy/docker-compose.yml to run these", endpointEnv)
+	}
+	c, err := blob.New(blob.Config{
+		Bucket:      fmt.Sprintf("nobody-created-this-%d", time.Now().UnixNano()),
+		Region:      "us-east-1",
+		Endpoint:    endpoint,
+		Credentials: blob.Credentials{AccessKeyID: testKey, SecretAccessKey: testSecret},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+
+	for _, tc := range []struct {
+		op  string
+		run func() error
+	}{
+		{"put", func() error { return c.Put(ctx, "a/key", []byte("x")) }},
+		{"get", func() error { _, err := c.Get(ctx, "a/key"); return err }},
+		// The one that matters most: without this, a mistyped bucket means
+		// every delete silently succeeds and nothing is ever removed.
+		{"delete", func() error { return c.Delete(ctx, "a/key") }},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			err := tc.run()
+			if !errors.Is(err, blob.ErrNoBucket) {
+				t.Fatalf("err = %v, want ErrNoBucket", err)
+			}
+			if errors.Is(err, blob.ErrNotFound) {
+				t.Error("a missing bucket also reported as a missing object")
+			}
+			// And the message names the bucket, not a key nobody asked about.
+			if !strings.Contains(err.Error(), "nobody-created-this") {
+				t.Errorf("the error does not say which bucket: %v", err)
+			}
+		})
+	}
+
+	// A missing object in a bucket that *does* exist is still ErrNotFound, and
+	// deleting it is still success. Otherwise the fix above would have turned
+	// every ordinary miss into an error.
+	good, _ := newClient(t)
+	if _, err := good.Get(ctx, "not/here"); !errors.Is(err, blob.ErrNotFound) {
+		t.Errorf("a missing object: %v, want ErrNotFound", err)
+	}
+	if err := good.Delete(ctx, "not/here"); err != nil {
+		t.Errorf("deleting a missing object: %v, want success", err)
+	}
+}
