@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -47,15 +48,47 @@ type adminTokens struct {
 	prints []string
 }
 
+// MinAdminTokenLength is the shortest credential this surface will accept.
+//
+// It exists because the flag became comma-separated, and that change can split a
+// token somebody was already using. A token containing a comma is not rejected
+// as a whole and then forgotten - it becomes two credentials, each shorter and
+// each independently valid. "sk_live_abcdef,ghi" would have made "ghi" a working
+// administrator password, silently, on upgrade.
+//
+// Sixteen characters is not a strength requirement; it is a floor low enough
+// that no deliberate token trips it and high enough that an accidental fragment
+// does.
+const MinAdminTokenLength = 16
+
 // parseAdminTokens reads the comma-separated flag. Empty entries are dropped,
 // so a trailing comma is not a token that matches nothing.
-func parseAdminTokens(spec string) adminTokens {
+//
+// An entry that is too short is an error rather than a warning, because the way
+// it happens is a token that used to work being cut in half - and a server that
+// started anyway would be a server whose administrative surface just got easier
+// to guess.
+func parseAdminTokens(spec string) (adminTokens, error) {
 	var t adminTokens
 	for _, s := range splitList(spec) {
+		if len(s) < MinAdminTokenLength {
+			return adminTokens{}, fmt.Errorf(
+				"-admin-token: %q is %d characters; at least %d are needed. The flag is comma-separated for rotation, so a token containing a comma is read as several - if that is what happened, remove the comma",
+				redactToken(s), len(s), MinAdminTokenLength)
+		}
 		t.digests = append(t.digests, sha256.Sum256([]byte(s)))
 		t.prints = append(t.prints, audit.Fingerprint(s))
 	}
-	return t
+	return t, nil
+}
+
+// redactToken names an offending entry without printing a credential: the length
+// and the fingerprint are enough to find it, and neither is the secret.
+func redactToken(s string) string {
+	if s == "" {
+		return "(empty)"
+	}
+	return "…" + audit.Fingerprint(s)
 }
 
 func (t adminTokens) enabled() bool { return len(t.digests) > 0 }

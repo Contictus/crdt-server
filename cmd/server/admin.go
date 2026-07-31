@@ -196,7 +196,10 @@ func startAdmin(addr, token string, withPprof bool, rec *audit.Recorder, registr
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	tokens := parseAdminTokens(token)
+	tokens, err := parseAdminTokens(token)
+	if err != nil {
+		return nil, err
+	}
 	outer.Handle("/", requireToken(tokens, rec, mux))
 	warnIfOpen(tokens, addr, log)
 

@@ -2,8 +2,11 @@ package main_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,4 +136,55 @@ func adminDelete(t *testing.T, s *server, path, token string) int {
 	t.Helper()
 	code, _ := adminRequest(t, s, http.MethodDelete, path, token, nil)
 	return code
+}
+
+// The flag became comma-separated so a token can be rotated. That change can
+// split a credential somebody was already using, and the dangerous part is not
+// that the whole token stops working - it is that each fragment starts working.
+// "sk_live_abcdef,ghi" would have made "ghi" an administrator password.
+func TestAnAdminTokenFragmentIsRefusedAtStartup(t *testing.T) {
+	binary := buildServer(t)
+	for _, tc := range []struct {
+		name  string
+		token string
+		start bool
+	}{
+		{"a token cut in half by a comma", "zqxfirsthalf,zqxsecondhalf", false},
+		{"one short token", "short", false},
+		{"a trailing comma is not a token", "a-perfectly-good-admin-token,", true},
+		{"a real rotation", "an-old-admin-token-x,a-new-admin-token-y", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Bounded, because a server given a usable token does not exit on
+			// its own: the question here is only whether it refuses to start.
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, binary, "-addr", freePort(t), "-admin-addr", freePort(t),
+				"-admin-token", tc.token)
+			out, err := cmd.CombinedOutput()
+			if tc.start {
+				// It had to be killed rather than exiting, so err is the kill.
+				// The only failure this test cares about is a refusal.
+				if strings.Contains(string(out), "admin-token") {
+					t.Fatalf("a usable token was refused:\n%s", out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("the server started with %q:\n%s", tc.token, out)
+			}
+			if !strings.Contains(string(out), "admin-token") {
+				t.Fatalf("it failed for some other reason:\n%s", out)
+			}
+			// And the refusal must not print the credential it is complaining
+			// about, in a message that goes to a log. Only distinctive pieces
+			// are checked: a fragment like "a" appears in ordinary log prose,
+			// and matching on it would fail this test for the wrong reason.
+			for _, piece := range strings.Split(tc.token, ",") {
+				if len(piece) >= 5 && strings.Contains(string(out), piece) {
+					t.Errorf("the error printed the token: %s", out)
+				}
+			}
+		})
+	}
 }

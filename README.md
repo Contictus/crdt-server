@@ -157,7 +157,10 @@ can rewrite or destroy any document — network isolation is still the first con
 not be the only one.
 
 `-admin-token a,b` accepts both at once, which is how one is rotated without a window where
-either the old holders are broken or the new token is not accepted yet. The audit trail below is
+either the old holders are broken or the new token is not accepted yet. **A token containing a
+comma is therefore read as several**, so tokens must be at least 16 characters and the server
+refuses to start on anything shorter — otherwise `sk_live_abcdef,ghi` would have quietly made
+`ghi` an administrator password on upgrade. The audit trail below is
 what makes the last step of that rotation safe: it says whether the old token is still being used
 before anybody removes it.
 
