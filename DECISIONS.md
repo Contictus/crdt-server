@@ -707,6 +707,67 @@ the metric, and "ten internal errors" every time ten people close a tab is how a
 operator learns to ignore the graph. A failed write is now 1001. 1011 is left to
 mean what it says: this server could not serve this document.
 
+### D81. A hook is an observer, never a participant
+Hocuspocus lets a hook be awaited, and so refuse or delay what the client did.
+This one cannot. A document that stops accepting keystrokes because somebody's
+webhook receiver is slow is a worse outcome than a missed notification, every
+time, and the failure is remote, intermittent and invisible from the editor.
+
+So `Emit` never blocks, the queue is bounded, and a full queue drops events and
+counts them. Authorisation already has a place to live - the token, checked
+before the connection is accepted ([D60]) - so the thing a blocking hook would
+be for is answered somewhere better.
+
+Rejected: an optional blocking mode for the deployments that want it. The knob
+would be off in every test and on in production, which is the arrangement that
+guarantees the failure is first seen by a user.
+
+### D82. Events are coalesced onto the room's tick, not sent per update
+A person typing produces tens of updates a second. A webhook per update is an
+outage at the receiving end and a queue that is permanently full at this one.
+
+The room therefore marks that something changed and emits at most one event of
+each kind per tick. That costs an increment on the hot path, needs no second
+timer per document, and produces an event that says "twelve updates since the
+last one" rather than twelve events. A room with no hooks configured does none
+of it, including the state-vector encode.
+
+The consequence to know about: the delay between an edit and its webhook is
+bounded by `-tick` (5 s by default), not by a knob of its own. Rejected: a
+per-document debounce timer, which is a second timer per resident document for a
+feature most deployments do not turn on, to buy latency that `-tick` already
+buys.
+
+### D83. Only local edits raise a change event
+Every replica holding a document applies every edit, so the naive version turns
+one keystroke into one webhook per replica. The event is raised where the client
+is: an update that arrived on the cluster bus is applied and relayed but not
+reported, because the replica whose client made it already reported it.
+
+`document.store` is different and deliberately not deduplicated - it is raised
+by whichever replica actually wrote rows, which is a fact about that replica.
+
+A receiver still has to be idempotent. Two people editing the same document on
+two replicas produce an event from each, both true, and a retried delivery
+repeats one - which is why the delivery id is generated once per event and
+reused across its retries, so a receiver can recognise the repeat.
+
+### D84. The signature covers the timestamp, and a store event means the write happened
+Two details that are the difference between a webhook and a webhook somebody can
+build on.
+
+The signature is `HMAC-SHA256(secret, "<unix>.<body>")`, sent as
+`t=<unix>,v1=<hex>`. The timestamp is inside the signed text rather than beside
+it, so a captured request cannot be replayed later with a fresh timestamp:
+changing it breaks the signature. `hook.Verify` is exported and is what the
+tests use, so the format has exactly one reader and one writer.
+
+`document.store` is raised by the persist goroutine after `Append` returns
+without an error, not by the room when it queues the write. The room learns
+about it through an atomic counter it drains on its next tick. A failed write
+raises nothing, which is the point: a receiver mirroring the document must not
+record that it was saved when it was not.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

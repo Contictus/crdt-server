@@ -30,6 +30,7 @@ import (
 	"github.com/mesutokul/ycollab/internal/auth"
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/gateway"
+	"github.com/mesutokul/ycollab/internal/hook"
 	"github.com/mesutokul/ycollab/internal/metrics"
 	"github.com/mesutokul/ycollab/internal/protocol"
 	"github.com/mesutokul/ycollab/internal/room"
@@ -77,6 +78,14 @@ func run() error {
 		rateMessageBurst = flag.Int("rate-message-burst", gateway.DefaultRateMessageBurst, "how many messages may arrive at once")
 		rateBytes        = flag.Float64("rate-bytes", gateway.DefaultRateBytes, "bytes per second one connection may send; negative means no limit")
 		rateByteBurst    = flag.Int("rate-byte-burst", gateway.DefaultRateByteBurst, "how many bytes may arrive at once")
+
+		webhookURL     = flag.String("webhook-url", os.Getenv("YCOLLAB_WEBHOOK_URL"), "POST document events to this URL; empty emits nothing")
+		webhookSecret  = flag.String("webhook-secret", os.Getenv("YCOLLAB_WEBHOOK_SECRET"), "HMAC-SHA256 key the webhook body is signed with; empty leaves the requests unsigned")
+		webhookEvents  = flag.String("webhook-events", "", "comma-separated events to send: "+strings.Join(hookNames(), ", ")+". Empty sends all of them")
+		webhookState   = flag.Bool("webhook-state", false, "include the whole document, as a Yjs update, in every event")
+		webhookTimeout = flag.Duration("webhook-timeout", hook.DefaultTimeout, "how long one webhook request may take")
+		webhookRetries = flag.Int("webhook-retries", hook.DefaultRetries, "how many times a failed delivery is retried")
+		webhookQueue   = flag.Int("webhook-queue", hook.DefaultQueue, "events that may be waiting for delivery before they start being dropped")
 
 		adminAddr = flag.String("admin-addr", envOr("YCOLLAB_ADMIN_ADDR", "127.0.0.1:6060"), "address for /metrics, /statsz and /debug/pprof; empty disables them")
 		pprof     = flag.Bool("pprof", true, "serve /debug/pprof on the admin address")
@@ -143,6 +152,39 @@ func run() error {
 		log.Warn("no -redis-url: this node does not share documents with any other")
 	}
 
+	var hooks hook.Sink
+	if *webhookURL != "" {
+		events, err := hookKinds(*webhookEvents)
+		if err != nil {
+			return err
+		}
+		webhook, err := hook.NewWebhook(hook.Config{
+			URL:     *webhookURL,
+			Secret:  []byte(*webhookSecret),
+			Events:  events,
+			Timeout: *webhookTimeout,
+			Retries: *webhookRetries,
+			Queue:   *webhookQueue,
+			Metrics: collectors,
+			Logger:  log,
+		})
+		if err != nil {
+			return err
+		}
+		// Closed after the rooms have stopped, so the events they emit on their
+		// way out are still accepted. Deferred functions run in reverse order,
+		// and the rooms are drained at the end of run, so this one is safe here.
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), *shutdown)
+			defer cancel()
+			if err := webhook.Close(ctx); err != nil {
+				log.Warn("webhook queue was not drained", "err", err)
+			}
+		}()
+		hooks = webhook
+		log.Info("sending document events", "events", len(events), "state", *webhookState)
+	}
+
 	manager := room.NewManager(roomCtx, room.ManagerConfig{
 		MaxRooms: *maxRooms,
 		Room: room.Config{
@@ -158,6 +200,8 @@ func run() error {
 			FlushInterval: flushSetting(*flushInterval, *durableWrites),
 			Bus:           bus,
 			AntiEntropy:   *antiEntropy,
+			Hooks:         hooks,
+			HookState:     *webhookState,
 			Metrics:       collectors,
 			Logger:        log,
 		},
@@ -282,6 +326,35 @@ func authorizer(secrets string, cfg auth.Config, log *slog.Logger) (func(*http.R
 		}
 		return gateway.Grant{Subject: grant.Subject, Write: grant.Write}, nil
 	}, nil
+}
+
+// hookNames is the flag help's list of event names, taken from the package
+// rather than written out again here.
+func hookNames() []string {
+	names := make([]string, 0, len(hook.Kinds))
+	for _, k := range hook.Kinds {
+		names = append(names, string(k))
+	}
+	return names
+}
+
+// hookKinds parses -webhook-events. An unknown name is an error rather than a
+// warning: silently sending nothing because of a typo is how somebody
+// discovers, a week later, that their integration was never running.
+func hookKinds(s string) ([]hook.Kind, error) {
+	names := splitList(s)
+	if len(names) == 0 {
+		return hook.Kinds, nil
+	}
+	kinds := make([]hook.Kind, 0, len(names))
+	for _, n := range names {
+		k, ok := hook.ParseKind(n)
+		if !ok {
+			return nil, fmt.Errorf("bad -webhook-events %q: known events are %s", n, strings.Join(hookNames(), ", "))
+		}
+		kinds = append(kinds, k)
+	}
+	return kinds, nil
 }
 
 // flushSetting turns the two flags into the room's one knob. A negative

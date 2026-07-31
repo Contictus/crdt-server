@@ -37,6 +37,35 @@ groups:
             across its connections. Either -rate-messages is too low for what
             these clients do, or one of them is flooding.
 
+      # A dropped hook event is one nothing will retry: the queue filled
+      # because the receiver could not keep up, and the server chose to lose
+      # the notification rather than slow a document down. Whatever the
+      # webhook feeds is now missing edits.
+      - alert: YcollabHooksDropped
+        expr: rate(ycollab_hooks_dropped_total[5m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab is discarding webhook events"
+          description: >
+            {{ $labels.instance }} has been dropping document events for five
+            minutes because the delivery queue is full. Either the receiver is
+            too slow or -webhook-queue is too small; the events are gone
+            either way.
+
+      # Failing deliveries are the receiver being down or refusing the
+      # request. Retries are already exhausted by the time this counts.
+      - alert: YcollabHooksFailing
+        expr: rate(ycollab_hooks_failed_total[5m]) > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "ycollab's webhook deliveries are failing"
+          description: >
+            {{ $labels.event }} events to the webhook endpoint have been
+            failing with {{ $labels.reason }} for ten minutes, after their
+            retries.
+
       # Writes failing means edits exist only in memory and in the clients that
       # made them. The server says so loudly in its logs; this is the same thing
       # said to whoever is on call.

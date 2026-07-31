@@ -186,6 +186,35 @@
         { "expr": "sum by (code) (rate(ycollab_connections_closed_total{job=\"$job\"}[5m]))", "legendFormat": "{{code}}" }
       ],
       "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "row",
+      "title": "Webhooks",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 45 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Deliveries",
+      "description": "Events the receiver accepted, and events given up on after their retries. Dropped means the queue was full and the event is gone: whatever the webhook feeds is now missing edits.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum by (event) (rate(ycollab_hooks_sent_total{job=\"$job\"}[5m]))", "legendFormat": "sent {{event}}" },
+        { "expr": "sum by (reason) (rate(ycollab_hooks_failed_total{job=\"$job\"}[5m]))", "legendFormat": "failed {{reason}}" },
+        { "expr": "sum (rate(ycollab_hooks_dropped_total{job=\"$job\"}[5m]))", "legendFormat": "dropped" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "reqps" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth and delivery time",
+      "description": "The queue is how far behind the receiver is. It is bounded, and events are dropped rather than allowed to slow a room down, so a queue sitting near its limit is a warning that drops are next.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 46 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "sum (ycollab_hook_queue_depth{job=\"$job\"})", "legendFormat": "queued" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(ycollab_hook_duration_seconds_bucket{job=\"$job\"}[5m])))", "legendFormat": "p99 seconds" }
+      ]
     }
   ]
 }

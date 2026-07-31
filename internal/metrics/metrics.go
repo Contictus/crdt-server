@@ -49,6 +49,16 @@ type Metrics struct {
 	StoreFailed   *prometheus.CounterVec
 	Compactions   prometheus.Counter
 	LoadDuration  prometheus.Histogram
+
+	// Hooks are the webhook deliveries. Dropped is the one to watch: it means
+	// the receiver was slow enough that events were thrown away rather than
+	// allowed to slow a document down.
+	HooksSent    *prometheus.CounterVec
+	HooksFailed  *prometheus.CounterVec
+	HooksDropped prometheus.Counter
+	HookAttempts prometheus.Counter
+	HookDuration prometheus.Histogram
+	HookQueue    prometheus.Gauge
 }
 
 // New registers a set of collectors and returns them.
@@ -149,6 +159,32 @@ func New(reg prometheus.Registerer) *Metrics {
 			Name:    "ycollab_document_load_seconds",
 			Help:    "Time to read a document and replay its log at room start.",
 			Buckets: prometheus.ExponentialBuckets(0.001, 3, 10),
+		}),
+
+		HooksSent: factory.counterVec(prometheus.CounterOpts{
+			Name: "ycollab_hooks_sent_total",
+			Help: "Webhook events the receiver accepted, by event.",
+		}, []string{"event"}),
+		HooksFailed: factory.counterVec(prometheus.CounterOpts{
+			Name: "ycollab_hooks_failed_total",
+			Help: "Webhook events given up on, by event and reason.",
+		}, []string{"event", "reason"}),
+		HooksDropped: factory.counter(prometheus.CounterOpts{
+			Name: "ycollab_hooks_dropped_total",
+			Help: "Webhook events discarded because the delivery queue was full.",
+		}),
+		HookAttempts: factory.counter(prometheus.CounterOpts{
+			Name: "ycollab_hook_attempts_total",
+			Help: "HTTP requests made to the webhook endpoint, including retries.",
+		}),
+		HookDuration: factory.histogram(prometheus.HistogramOpts{
+			Name:    "ycollab_hook_duration_seconds",
+			Help:    "Time for one request to the webhook endpoint.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 3, 10),
+		}),
+		HookQueue: factory.gauge(prometheus.GaugeOpts{
+			Name: "ycollab_hook_queue_depth",
+			Help: "Webhook events waiting to be delivered.",
 		}),
 	}
 }

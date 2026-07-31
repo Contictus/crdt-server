@@ -14,10 +14,12 @@ import (
 	"errors"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mesutokul/ycollab/internal/cluster"
 	"github.com/mesutokul/ycollab/internal/crdt"
+	"github.com/mesutokul/ycollab/internal/hook"
 	"github.com/mesutokul/ycollab/internal/metrics"
 	"github.com/mesutokul/ycollab/internal/protocol"
 	"github.com/mesutokul/ycollab/internal/store"
@@ -81,6 +83,16 @@ type Config struct {
 	AntiEntropy time.Duration
 	// Stats counts cluster traffic, shared across the node's rooms.
 	Stats *Stats
+
+	// Hooks receives document events, coalesced to at most one of each per
+	// tick. Nil means nothing is emitted and, more to the point, nothing is
+	// encoded for it - so a server without hooks pays nothing for them.
+	Hooks hook.Sink
+	// HookState makes every event carry the whole document as a Yjs update.
+	// Off by default: it is the difference between a notification and a copy of
+	// the document on every tick of every changed room.
+	HookState bool
+
 	// Metrics is where this room reports what it does. Nil becomes a set
 	// registered nowhere.
 	Metrics *metrics.Metrics
@@ -173,6 +185,13 @@ type Room struct {
 	stats   *Stats
 	metrics *metrics.Metrics
 
+	// hooks is cfg.Hooks, nil when nothing is listening; changes counts local
+	// edits since the last event (room goroutine); storedRows counts rows
+	// written since the last one (persist goroutine, hence atomic). See hooks.go.
+	hooks      hook.Sink
+	changes    uint64
+	storedRows atomic.Uint64
+
 	// remote carries envelopes from the bus into the room goroutine; pub carries
 	// ours out. Both are nil without a bus. Neither is ever blocked on: the room
 	// must not wait for the network, and the network must not wait for the room.
@@ -219,6 +238,7 @@ func New(cfg Config) *Room {
 		docID:   store.DocumentID(cfg.Name),
 		stats:   cfg.Stats,
 		metrics: cfg.Metrics,
+		hooks:   cfg.Hooks,
 		conns:   make(map[Conn]*connState),
 		mailbox: make(chan command, cfg.Mailbox),
 		done:    make(chan struct{}),
@@ -530,6 +550,11 @@ func (r *Room) update(conn Conn, update []byte) {
 		return
 	}
 	r.record(update)
+	// Only local edits raise a change event. An update that arrived on the bus
+	// was already reported by the replica whose client made it, and counting it
+	// again here would turn one edit into one webhook per replica holding the
+	// document.
+	r.changed()
 	// Relay the sender's bytes rather than re-encoding the document's delta.
 	// Peers then receive exactly what the author produced, and updates for
 	// structs we are still missing propagate instead of being stuck behind our
@@ -592,6 +617,7 @@ func (r *Room) tick(now time.Time) bool {
 		r.broadcast(protocol.WriteAwareness(payload), nil)
 	}
 	r.announce(now)
+	r.emitHooks(now)
 	if len(r.conns) > 0 || r.lastEmpty.IsZero() {
 		return false
 	}
@@ -668,6 +694,9 @@ func (r *Room) drop(conn Conn, code int, reason string) {
 //     drain sees it. A joining connection is closed with 1001 rather than
 //     silently forgotten: the client reconnects and lands in a fresh room.
 func (r *Room) stop(code int, reason string) {
+	// Before the connections go, so the last change event still says how many
+	// people were on the document when it happened.
+	r.emitHooks(r.cfg.Now())
 	for conn := range r.conns {
 		conn.Close(code, reason)
 	}
@@ -682,6 +711,10 @@ func (r *Room) stop(code int, reason string) {
 	// Persist before signalling that we are gone, so a caller that waits for
 	// the room knows the document is on disk.
 	r.finishPersisting()
+	// The final flush wrote rows nobody has been told about yet. The writer has
+	// stopped by now, so this is the last thing that can raise a store event
+	// for this document.
+	r.emitHooks(r.cfg.Now())
 	close(r.done)
 	r.sendMu.Lock()
 	r.closed = true

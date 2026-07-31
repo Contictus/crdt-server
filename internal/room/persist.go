@@ -175,6 +175,12 @@ func (r *Room) persist(jobs <-chan persistJob) {
 			r.log.Error("could not write updates", "count", len(batch), "err", err)
 		} else {
 			r.folded = append(r.folded, seqs...)
+			// The store event is raised here rather than in the room goroutine
+			// because this is the only place that knows the write actually
+			// happened. It is a counter the room drains on its next tick, so a
+			// document being written every 200 ms still produces one event a
+			// tick rather than five a second.
+			r.stored(len(batch))
 		}
 		batch = batch[:0]
 	}

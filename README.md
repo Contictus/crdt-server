@@ -108,6 +108,76 @@ command line and will block the process for a thirty-second CPU profile on reque
 deployment gets to decide who can reach it. `/healthz` is on both, because a load balancer
 probes the port it sends traffic to.
 
+### Webhooks
+
+`-webhook-url` makes the server POST a JSON body when something happens to a document, which
+is how a backend finds out about edits without holding a WebSocket open for every document.
+
+| Event | Raised when |
+| --- | --- |
+| `document.change` | clients connected to *this* node changed the document |
+| `document.store` | updates were written to the database |
+
+```json
+{
+  "event": "document.change",
+  "document": "my-doc",
+  "at": "2026-07-30T09:14:02.481Z",
+  "node": 8146073922814,
+  "clients": 3,
+  "updates": 12,
+  "state_vector": "AQKf1Y…",
+  "state": "AQKf1Y…"
+}
+```
+
+`state_vector` is always there and lets a receiver tell whether it is behind. `state` is the
+whole document as a Yjs update, and only appears with `-webhook-state`; a receiver reads it
+with one `Y.applyUpdate(doc, new Uint8Array(atob(body.state).split('').map(c => c.charCodeAt(0))))`.
+
+Four things worth knowing before you build on it:
+
+- **Events are coalesced onto the room's tick.** Typing produces tens of updates a second and
+  you get one event saying `"updates": 12`, not twelve events. The delay is bounded by `-tick`
+  (5 s by default), so lower it if you want faster notifications.
+- **A hook cannot block or refuse an edit.** The queue is bounded and a full queue drops events
+  and counts them in `ycollab_hooks_dropped_total`; a slow receiver never becomes a slow
+  document. `-webhook-queue` sizes it.
+- **Be idempotent.** Two people editing on two replicas produce an event from each, and a
+  retried delivery repeats one. `X-Ycollab-Delivery` is generated once per event and reused
+  across its retries, so a repeat is recognisable.
+- **`document.change` is per replica, and only for local edits.** An update that arrived over
+  the cluster bus is not reported again here — otherwise one keystroke would be one webhook per
+  replica.
+
+Failures are retried (`-webhook-retries`, default 2) with a doubling backoff on a timeout, a
+connection error, 429 or 5xx. A 4xx is taken at face value and not retried.
+
+**Verify the signature.** With `-webhook-secret` set, every request carries
+
+```
+X-Ycollab-Signature: t=1750000000,v1=<hex of HMAC-SHA256(secret, "<t>.<body>")>
+```
+
+The timestamp is inside the signed text, so a captured request cannot be replayed later with a
+fresh one. Reject a `t` far from your own clock. In Node:
+
+```js
+import { createHmac, timingSafeEqual } from 'node:crypto'
+
+// body is the raw bytes, not the parsed object.
+function verify(secret, header, body, tolerance = 300) {
+  const parts = Object.fromEntries(header.split(',').map(p => p.trim().split('=')))
+  if (Math.abs(Date.now() / 1000 - Number(parts.t)) > tolerance) return false
+  const want = createHmac('sha256', secret).update(`${parts.t}.`).update(body).digest()
+  const got = Buffer.from(parts.v1, 'hex')
+  return got.length === want.length && timingSafeEqual(got, want)
+}
+```
+
+Without a secret the requests are unsigned and the server says so at startup, because a
+receiver then has no way to tell this server's events from anybody else's.
+
 ### Tokens
 
 `-jwt-secret` makes the server require a signed token. Without it every client may read and
