@@ -727,6 +727,38 @@ the same token and document; it is `0` by default, because a remembered decision
 that has not taken effect yet. An endpoint may return `"ttl": <seconds>` to be re-asked sooner
 than that, but never later.
 
+### The JavaScript client
+
+Optional. The server is plain `y-websocket`, and this is the whole integration:
+
+```js
+new WebsocketProvider('wss://collab.example.com', 'notes', new Y.Doc(), { params: { token } })
+```
+
+[`ycollab-client`](client/) is for the three places that setup leaves something to you, and
+nothing else: tokens that expire (`y-websocket` reconnects forever with the ones it was given,
+so the document quietly stops syncing an hour after page load), refusals you cannot see (its
+permission-denied handler is a module-level `console.warn` that is not an option and cannot be
+replaced), and subdocuments, which need a provider and a token each.
+
+```js
+import { connect } from 'ycollab-client'
+
+const client = connect({
+  url: 'wss://collab.example.com',
+  name: 'notes',
+  token: (document) => fetch(`/api/collab-token?doc=${document}`).then((r) => r.text())
+})
+client.on('denied', ({ reason }) => showBanner(reason))
+const text = client.doc.getText('body')
+```
+
+The token function is called again before the token expires and once after a refusal; refreshing
+writes `provider.params` rather than reconnecting, because this server authorises at the upgrade
+and never again. `client.provider` is the real provider, so nothing here can get in the way.
+
+Its tests build `cmd/server` and run against real server processes — see [client/](client/).
+
 ### The demo
 
 ```sh
@@ -858,6 +890,8 @@ internal/metrics      Prometheus collectors
 tools/fixturegen      Node: generates the binary fixtures from real yjs
 tools/verify          Node: applies Go-produced updates in real yjs
 tools/soak            Node: drives real clients at a running server
+client                the optional npm package: token refresh, refusals, subdocuments
+client                the optional npm package: token refresh, refusals, subdocuments
 web                   TipTap + y-websocket demo
 deploy                docker-compose for local Postgres and Redis, plus the cluster
 deploy/k8s            Kubernetes manifests

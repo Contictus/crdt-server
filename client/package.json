@@ -1,0 +1,53 @@
+{
+  "name": "ycollab-client",
+  "version": "0.1.0",
+  "description": "Client for the ycollab collaboration server: token refresh, refusals you can see, and subdocuments connected for you",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "peerDependencies": {
+    "y-websocket": "^3.0.0",
+    "yjs": "^13.6.0"
+  },
+  "keywords": [
+    "yjs",
+    "crdt",
+    "collaboration",
+    "y-websocket",
+    "ycollab",
+    "realtime"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mesutokul/ycollab.git",
+    "directory": "client"
+  },
+  "homepage": "https://github.com/mesutokul/ycollab/tree/main/client#readme",
+  "bugs": {
+    "url": "https://github.com/mesutokul/ycollab/issues"
+  },
+  "devDependencies": {
+    "y-websocket": "3.0.0",
+    "yjs": "13.6.31"
+  }
+}

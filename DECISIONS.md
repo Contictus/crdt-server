@@ -1575,6 +1575,41 @@ interval then blocked re-measuring for fifteen seconds. Twenty rooms under load
 reported zero bytes. The interval now throttles re-measuring a weight that is
 already known, and never blocks learning one.
 
+### D132. The client package wraps three gaps, and refuses to wrap anything else
+A client library for a server that is already plain `y-websocket` is a bad idea
+by default: it adds a dependency, a version to keep in step, and a layer between
+the application and a provider that works. The brief for it was "smooth the
+integration story", which is how wrappers that exist to exist get written.
+
+So the package is scoped to what reading `y-websocket`'s source says the caller
+*cannot* do, not to what looks nicer:
+
+- `permissionDeniedHandler` is a module-level `const` calling `console.warn`
+  (`y-websocket.js:105`). It is not an option and cannot be replaced. An
+  application has no way to learn that the server refused it, or why.
+- The provider reconnects forever with the parameters it was constructed with,
+  so an expiring token turns into a silent 1008 loop an hour after page load.
+- Subdocuments are announced by guid through an event and connected by nobody.
+  Each is a separate document to the server, so each needs its own token, which
+  is why the token source takes a name.
+
+Everything else is delegated, and `client.provider` is public so that being in
+the way is never the answer.
+
+Two things fell out of reading the server rather than the client. Authorisation
+happens at the WebSocket upgrade and never again, so a token expiring under an
+open connection costs nothing - refreshing therefore writes `provider.params`
+(documented as safely updatable, re-read by `get url()` on every connect) and
+leaves the socket alone. A test asserts the socket object is unchanged across a
+refresh, because the obvious implementation - reconnect with a new token - would
+have dropped every editor's connection once an hour for no reason.
+
+And a 1008 does not say whether the token is stale or the caller is unwelcome.
+One retry with a freshly minted token separates them: refused twice is about the
+caller, and further retries are noise on somebody else's server. Rejected: a
+retry budget with backoff, which is a lot of machinery for a question that one
+extra attempt answers exactly.
+
 ### D131. MIT, to match the ecosystem this server has to live in
 Until now there was no LICENSE file at all, which does not mean "take it" - it
 means the opposite. Without a licence the default is exclusive copyright: anyone
