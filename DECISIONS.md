@@ -1575,6 +1575,24 @@ interval then blocked re-measuring for fifteen seconds. Twenty rooms under load
 reported zero bytes. The interval now throttles re-measuring a weight that is
 already known, and never blocks learning one.
 
+### D131. MIT, to match the ecosystem this server has to live in
+Until now there was no LICENSE file at all, which does not mean "take it" - it
+means the opposite. Without a licence the default is exclusive copyright: anyone
+who found this could read it and nothing else. Three days of work sitting on one
+disk under a rule that forbids its own use is not a licensing position, it is an
+omission.
+
+MIT rather than Apache-2.0. Apache is the better licence on the merits - it
+grants patent rights explicitly, which MIT only arguably does by implication -
+but this server exists to be dropped in beside `yjs`, `y-protocols`,
+`y-websocket` and `lib0`, all of which are MIT. Matching them means nobody
+integrating has to reason about two licences, and the one real advantage Apache
+has is a patent grant from an author who holds no patents. Chosen for the
+ecosystem, not because the difference does not exist.
+
+The copyright line carries the name git is configured with. Anyone who wants
+their legal name on it should edit one line before this is published anywhere.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an

@@ -864,3 +864,15 @@ deploy/k8s            Kubernetes manifests
 deploy/observability  Prometheus alert rules and a Grafana dashboard
 testdata/fixtures     committed binary fixtures
 ```
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). The same licence as `yjs`, `y-protocols`, `y-websocket` and
+`lib0`, so nothing here adds a second licence to reason about on the client side. The
+reasoning, including why not Apache-2.0, is [D131](DECISIONS.md).
+
+This server has not run in production and has no users yet. The engineering is verified —
+byte-for-byte against real Yjs, under `-race` against real Postgres, Redis and MinIO — but
+verified is not the same as proven by traffic, and the limits that are known are stated in
+[Limits](#limits) and in the concerns at the end of [DECISIONS.md](DECISIONS.md) rather than
+left for you to find.
