@@ -114,6 +114,53 @@ while the listener was read-only. It now serves `POST` and `DELETE`, so a reques
 can rewrite or destroy any document — network isolation is still the first control, but it should
 not be the only one.
 
+`-admin-token a,b` accepts both at once, which is how one is rotated without a window where
+either the old holders are broken or the new token is not accepted yet. The audit trail below is
+what makes the last step of that rotation safe: it says whether the old token is still being used
+before anybody removes it.
+
+### The audit trail
+
+The admin listener can read, overwrite and delete every document, so what happens on it is
+recorded — by default, with no configuration. One JSON object per line on **stdout**, while the
+process log is on stderr, so the two are already separate wherever they are collected:
+
+```json
+{"time":"2026-07-31T09:14:02Z","action":"document.delete","result":"ok","status":204,
+ "document":"notes","credential":"a1b2c3d4","ip":"10.1.4.7","method":"DELETE",
+ "path":"/documents/notes","bytes":0,"duration_ms":12}
+```
+
+`action` is the server's vocabulary rather than HTTP's — `document.read`, `document.write`,
+`document.delete`, `version.list`, `version.read`, `version.take`, `profile.read`, `stats.read`,
+`unknown`. `result` is derived from the status: `ok`, `denied` (401/403), `refused` (any other
+4xx) or `failed` (5xx). `credential` is the first eight hex digits of the SHA-256 of the token
+that was used — enough to tell two tokens apart during a rotation, and not the token.
+
+Three things are deliberate:
+
+- **Attempts are recorded, not just successes.** A `401` is the most interesting line in the
+  file. The token that was *tried* is never written, though: that would make the trail an oracle
+  for guessing it.
+- **`/debug/pprof` is audited.** A heap profile is a copy of every document the process is
+  holding, which makes it the least obvious way to read documents off this surface.
+- **No document content, ever.** Names, byte counts, status codes and the server's own error
+  sentence. A trail that carried what was written would be a second copy of the data with none of
+  the protection the first copy has.
+
+`/metrics` is the one route not recorded when it succeeds — it is scraped every few seconds
+forever, and a record per scrape would bury everything worth reading. A *refused* scrape is
+recorded, because a wrong credential there is somebody finding out whether the surface is open.
+
+`-audit-log /var/log/ycollab/audit.jsonl` writes to a file instead, appending rather than
+truncating so a restart is not a way to lose the trail. Nothing here rotates that file —
+`logrotate` already exists, and a server that truncates its own audit trail on a schedule is a
+strange thing to hand an auditor. `-audit-log ""` turns it off, and the server warns at startup
+when it is.
+
+With one shared `-admin-token` this records *which credential*, not which person. That is the
+honest limit of what the server knows about an operator surface.
+
 ### More than one replica
 
 `-redis-url` makes a process one replica of a cluster rather than a server on its own. Replicas

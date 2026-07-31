@@ -100,7 +100,9 @@ func run() error {
 		maxConnsPerIP  = flag.Int("max-conns-per-ip", 0, "cap on concurrent connections from one client address; 0 means unlimited")
 		trustedProxies = flag.String("trusted-proxies", os.Getenv("YCOLLAB_TRUSTED_PROXIES"), `comma-separated CIDR blocks whose X-Forwarded-For header is believed, or "loopback" or "private". Empty uses the socket's peer address and ignores the header, which is the only safe default when clients reach this server directly`)
 
-		adminToken = flag.String("admin-token", os.Getenv("YCOLLAB_ADMIN_TOKEN"), "require this token as an Authorization: Bearer header on the admin endpoints; empty leaves them open to anyone who can reach the address")
+		adminToken = flag.String("admin-token", os.Getenv("YCOLLAB_ADMIN_TOKEN"), "require this token as an Authorization: Bearer header on the admin endpoints; empty leaves them open to anyone who can reach the address. Several may be given, comma-separated, while a token is being rotated")
+
+		auditLog = flag.String("audit-log", envOr("YCOLLAB_AUDIT_LOG", "-"), `write an audit record per admin request, as one JSON object per line: "-" is stdout, which keeps it clear of the process log on stderr; a path writes to that file; empty keeps no trail at all`)
 
 		adminAddr = flag.String("admin-addr", envOr("YCOLLAB_ADMIN_ADDR", "127.0.0.1:6060"), "address for /metrics, /statsz and /debug/pprof; empty disables them")
 		pprof     = flag.Bool("pprof", true, "serve /debug/pprof on the admin address")
@@ -289,7 +291,13 @@ func run() error {
 		Logger:    log,
 	}))
 
-	adminSrv, err := startAdmin(*adminAddr, *adminToken, *pprof, registry, manager, documents, log)
+	recorder, err := openAudit(*auditLog, log)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = recorder.Close() }()
+
+	adminSrv, err := startAdmin(*adminAddr, *adminToken, *pprof, recorder, registry, manager, documents, log)
 	if err != nil {
 		return err
 	}

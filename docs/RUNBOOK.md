@@ -458,3 +458,78 @@ evidence.
 
 Keep `now.bin`. A Yjs update is self-contained and applies to an empty document,
 so it is a complete record of what the server believed at that moment.
+
+## Who did that
+
+The audit trail is on the server's **stdout**, one JSON object per line, or in
+the file named by `-audit-log`. Wherever your logs land, these are `jq`
+one-liners. The examples read a file; substitute your collector's query.
+
+**Who deleted a document, and when.**
+
+```sh
+jq -r 'select(.action=="document.delete") | "\(.time) \(.document) \(.result) cred=\(.credential) from=\(.ip)"' audit.jsonl
+```
+
+**Everything that touched one document**, in order, including the reads:
+
+```sh
+jq -r 'select(.document=="my-doc") | "\(.time) \(.action) \(.result) \(.credential)"' audit.jsonl
+```
+
+**Somebody is trying credentials.** Every refusal, grouped by source:
+
+```sh
+jq -r 'select(.result=="denied") | .ip' audit.jsonl | sort | uniq -c | sort -rn
+```
+
+The trail never records the token that was tried, so there is nothing here to
+correlate beyond the address and the timing. If one address is responsible, the
+"One address is misbehaving" section above applies — but note that the admin
+listener has no per-address cap of its own, because the answer for that surface
+is not to route to it.
+
+**Who read a heap profile.** A profile is a copy of every document the process is
+holding, which makes this the least obvious way to read documents off the server:
+
+```sh
+jq -r 'select(.action=="profile.read") | "\(.time) \(.path) cred=\(.credential) from=\(.ip)"' audit.jsonl
+```
+
+### Finishing a token rotation
+
+`-admin-token a,b` accepts both while holders are updated. The trail is how you
+find out whether the old one has actually stopped being used before removing it:
+
+1. Note the fingerprint of the old token: it is the first eight hex digits of its
+   SHA-256.
+
+   ```sh
+   printf %s "$OLD_TOKEN" | sha256sum | cut -c1-8
+   ```
+
+2. Ask whether anything has used it lately, across every replica:
+
+   ```sh
+   jq -r --arg c "$(printf %s "$OLD_TOKEN" | sha256sum | cut -c1-8)" \
+      'select(.credential==$c) | .time' audit.jsonl | tail -5
+   ```
+
+3. Nothing for a period longer than your slowest scheduled job — a nightly backup
+   means waiting more than a day — means it is safe to drop from the flag and
+   restart.
+
+If step 2 returns lines you cannot account for, the old token is somewhere you
+did not know about, and that is the answer the rotation was for.
+
+### What is not in the trail
+
+- **Editing.** Clients connecting and typing are not audited. That is per
+  keystroke traffic, and the record of what a document contains is the document
+  and its version history. What clients were refused is in
+  `ycollab_denied_total` and the process log.
+- **Who, as a person.** With one shared `-admin-token` the trail records which
+  credential, not which human held it.
+- **Content.** Document names and byte counts only, deliberately.
+- **Successful `/metrics` scrapes**, which would be most of the file. Refused
+  ones are recorded.

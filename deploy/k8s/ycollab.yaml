@@ -125,8 +125,19 @@ spec:
             # the Service below not naming the port is the first control and
             # this is the second. Prometheus needs it too: give the scrape job
             # an `authorization` block carrying the same value.
+            #
+            # Comma-separated during a rotation: add the new one, update every
+            # holder, then use the audit trail's credential fingerprint to
+            # confirm the old one has stopped being used before removing it.
             - name: YCOLLAB_ADMIN_TOKEN
               valueFrom: { secretKeyRef: { name: ycollab, key: admin-token } }
+            # The audit trail goes to stdout by default, where kubectl logs and
+            # every log collector already pick it up - and the process log is on
+            # stderr, so the two arrive already separated. Set this to a path
+            # only if the trail has to go somewhere the collector is not, and
+            # mount a volume for it: a file inside the container dies with it.
+            - name: YCOLLAB_AUDIT_LOG
+              value: "-"
           ports:
             - { name: ws, containerPort: 8080 }
             - { name: admin, containerPort: 6060 }

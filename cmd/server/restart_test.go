@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -39,7 +40,30 @@ type server struct {
 	// its own listener, which is where the operator endpoints live.
 	addr  string
 	admin string
+	// logs is the process log, which the server writes to stderr. audit is its
+	// stdout, kept apart on purpose: the audit trail is meant to be a separate
+	// stream, and a test that merged them could not tell whether it is.
 	logs  *bytes.Buffer
+	audit *lockedBuffer
+}
+
+// lockedBuffer is a bytes.Buffer safe to read while os/exec's copier is writing
+// to it, which is what reading the audit trail of a running server needs.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // buildServer compiles the binary once per test binary run.
@@ -81,13 +105,14 @@ func startServer(t *testing.T, binary, addr, dbURL string, extra ...string) *ser
 		"-compact-after", "5",
 		"-log-level", "debug",
 	}, extra...)
+	out := &lockedBuffer{}
 	cmd := exec.Command(binary, args...)
-	cmd.Stdout = logs
+	cmd.Stdout = out
 	cmd.Stderr = logs
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	s := &server{t: t, cmd: cmd, addr: addr, admin: admin, logs: logs}
+	s := &server{t: t, cmd: cmd, addr: addr, admin: admin, logs: logs, audit: out}
 	t.Cleanup(s.kill)
 	s.waitReady()
 	return s

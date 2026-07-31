@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/mesutokul/ycollab/internal/audit"
 	"github.com/mesutokul/ycollab/internal/room"
 	"github.com/mesutokul/ycollab/internal/store"
 )
@@ -115,13 +116,19 @@ func startRetention(ctx context.Context, documents *store.Store, keep time.Durat
 // separate listener means the deployment decides who can reach them - through a
 // bind address, a firewall rule or, in Kubernetes, simply not naming the port
 // in the Service.
-func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registry, manager *room.Manager, documents *store.Store, log *slog.Logger) (*http.Server, error) {
+func startAdmin(addr, token string, withPprof bool, rec *audit.Recorder, registry *prometheus.Registry, manager *room.Manager, documents *store.Store, log *slog.Logger) (*http.Server, error) {
 	if addr == "" {
 		log.Info("no -admin-addr: metrics, stats and pprof are not served")
 		return nil, nil
 	}
 
 	mux := http.NewServeMux()
+	// /metrics is the one route that is not audited on success. It is scraped
+	// every few seconds forever, so a record per scrape would bury every line
+	// worth reading under a stream of the least interesting one. A scrape that
+	// is *refused* is still audited, by the token check outside this mux, which
+	// is the case that matters: a wrong credential on /metrics is somebody
+	// finding out whether the surface is open.
 	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		// A metrics endpoint that panics takes the server with it, which is a
 		// spectacular way for observability to cause an outage.
@@ -130,7 +137,7 @@ func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registr
 	// /statsz stays as it was: the cluster counters as plain JSON, because the
 	// Phase 4 tests read them and parsing an exposition format to find out
 	// whether updates looped is not a test anybody writes.
-	mux.HandleFunc("/statsz", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/statsz", auditedFunc(rec, actionStats, func(w http.ResponseWriter, _ *http.Request) {
 		body := map[string]any{
 			"node_id": manager.NodeID(),
 			"rooms":   manager.Len(),
@@ -140,7 +147,7 @@ func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registr
 		if err := json.NewEncoder(w).Encode(body); err != nil {
 			log.Debug("could not write stats", "err", err)
 		}
-	})
+	}))
 	// Reading works with or without a database: a resident room can be read
 	// from memory, and without a store that is the only copy there is. A typed
 	// nil would satisfy the interface and then panic, so the conversion is
@@ -148,22 +155,32 @@ func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registr
 	var persistence room.Persistence
 	if documents != nil {
 		persistence = documents
-		mux.HandleFunc("DELETE /documents/{name}", deleteDocument(manager, documents, log))
+		mux.HandleFunc("DELETE /documents/{name}", auditedFunc(rec, actionDocumentDelete, deleteDocument(manager, documents, log)))
 		// History needs a database by definition, so these are registered only
 		// when there is one. Without it the routes are absent and a caller gets
 		// a 404 that means "not on this server" rather than a 500 later.
-		mux.HandleFunc("GET /documents/{name}/versions", listVersions(documents, log))
-		mux.HandleFunc("GET /documents/{name}/versions/{id}", getVersion(documents, log))
-		mux.HandleFunc("POST /documents/{name}/versions", takeVersion(manager, documents, log))
+		mux.HandleFunc("GET /documents/{name}/versions", auditedFunc(rec, actionVersionList, listVersions(documents, log)))
+		mux.HandleFunc("GET /documents/{name}/versions/{id}", auditedFunc(rec, actionVersionRead, getVersion(documents, log)))
+		mux.HandleFunc("POST /documents/{name}/versions", auditedFunc(rec, actionVersionTake, takeVersion(manager, documents, log)))
 	}
-	mux.HandleFunc("GET /documents/{name}", getDocument(manager, persistence, log))
-	mux.HandleFunc("POST /documents/{name}", mergeDocument(manager, persistence, log))
+	// A catch-all, so that a request which matched no route still leaves a
+	// record. Without it, an authorised caller poking at paths this server does
+	// not serve was invisible - and "somebody was looking around in here" is
+	// exactly the thing a trail is for. ServeMux prefers the more specific
+	// pattern, so every route above still wins over this one.
+	mux.HandleFunc("/", auditedFunc(rec, "unknown", http.NotFound))
+	mux.HandleFunc("GET /documents/{name}", auditedFunc(rec, actionDocumentRead, getDocument(manager, persistence, log)))
+	mux.HandleFunc("POST /documents/{name}", auditedFunc(rec, actionDocumentWrite, mergeDocument(manager, persistence, log)))
 	if withPprof {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		// Audited like the document routes, and for the same reason: a heap
+		// profile is a copy of every document this process is holding. It is the
+		// least obvious way to read the documents off this surface, which makes
+		// it the one most worth having a record of.
+		mux.HandleFunc("/debug/pprof/", auditedFunc(rec, actionProfile, pprof.Index))
+		mux.HandleFunc("/debug/pprof/cmdline", auditedFunc(rec, actionProfile, pprof.Cmdline))
+		mux.HandleFunc("/debug/pprof/profile", auditedFunc(rec, actionProfile, pprof.Profile))
+		mux.HandleFunc("/debug/pprof/symbol", auditedFunc(rec, actionProfile, pprof.Symbol))
+		mux.HandleFunc("/debug/pprof/trace", auditedFunc(rec, actionProfile, pprof.Trace))
 	}
 
 	// /healthz stays outside the token check, and everything else goes behind
@@ -177,8 +194,9 @@ func startAdmin(addr, token string, withPprof bool, registry *prometheus.Registr
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	outer.Handle("/", requireToken(token, mux))
-	warnIfOpen(token, addr, log)
+	tokens := parseAdminTokens(token)
+	outer.Handle("/", requireToken(tokens, rec, mux))
+	warnIfOpen(tokens, addr, log)
 
 	// Listening here rather than inside the goroutine, so a port that is already
 	// taken is an error at startup instead of a line in the log that nobody

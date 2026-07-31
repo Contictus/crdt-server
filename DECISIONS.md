@@ -1202,6 +1202,81 @@ webhook dependency in the authorisation path for the sake of eight lines of HMAC
 or to write those eight lines twice. Two implementations of a signing format are
 two implementations that can drift, and the receiver only ever writes one verifier.
 
+### D110. The audit trail is a stream, not a table
+The obvious place to put an audit log, in a server that already has PostgreSQL,
+is a table. It was rejected.
+
+An audit trail's value is that it is harder to change than the thing it records.
+A table in the same database that the audited surface can reach is not: the
+credential that just deleted a document is a credential with access to the
+database that holds the record of it. Making it genuinely append-only needs a
+restricted role, a trigger, or a separate cluster — none of which this server can
+arrange for the operator, and all of which it would be implying by shipping the
+table.
+
+A stream of JSON lines on **stdout** goes to whatever the deployment already
+collects, which is somewhere else by construction. It also works with no
+database at all, and needs no schema migration, no retention job and no read API.
+The default is on, because an audit trail nobody enabled is an audit trail nobody
+has on the day it is needed.
+
+The one thing the table would have given is queryability, and that is the log
+pipeline's job. The RUNBOOK's procedures are `jq` one-liners.
+
+Rejected alternative: write it through `slog` alongside the process log. That
+buries the interesting lines under debug output and forces every reader to filter
+first. stdout versus stderr costs nothing and is already separate.
+
+### D111. The audit record names the credential, and never the one that failed
+A successful request records `credential`: the first eight hex digits of the
+SHA-256 of the token used. A refused one records the literal `invalid`.
+
+The asymmetry is the point. Fingerprinting the token that was *presented* on a
+failure would turn the trail into an oracle: somebody who can read the log — a
+wider set than those who hold the token, since the log gets shipped — could
+confirm guesses against it offline. There is nothing to learn from a failed
+attempt's fingerprint that the `denied` result and the source address do not
+already say.
+
+Four bytes on the success side is short deliberately. Its job is telling a
+handful of tokens apart during a rotation, not resisting somebody holding both the
+log and a guess. A longer prefix buys no more distinguishing power for that job
+and offers more for the other one.
+
+The limit worth stating: with one shared `-admin-token` this says *which
+credential*, not which person. That is what the server actually knows, and the
+README says so rather than implying otherwise.
+
+### D112. `-admin-token` takes a list, because rotating one secret has no safe order
+It used to be one string. With one, every rotation has a window: remove the old
+token before its holders are updated and the backup script breaks; add the new one
+after and there is a moment where nothing works.
+
+`-admin-token a,b` follows what `-jwt-secret` already does. The step that was
+missing is the last one — knowing when the old token has actually stopped being
+used — and that is what D111's fingerprint answers. The two features are one
+feature.
+
+Comparison stays constant-time and does not stop at the first match. Stopping
+early would leak only the position in a list that is not secret, but a check that
+is constant-time except for the part somebody added later is the usual way this
+goes wrong.
+
+### D113. Auditing wraps each route, not the mux
+`http.ServeMux` fills in a pattern's wildcards as part of matching, so
+`r.PathValue("name")` is populated for a handler registered *as* a route and empty
+for a wrapper sitting outside the mux. A single outer layer would therefore have
+had to parse `/documents/{name}/versions/{id}` a second time, in a copy of the
+routing table that could drift from the real one.
+
+Wrapping per route costs one call per registration and gets the document name from
+the router that already worked it out.
+
+The gap that leaves — a request matching no route at all — was real, and a test
+found it: an authorised caller poking at paths this server does not serve was
+invisible. A catch-all `/` handler, audited as `unknown`, closes it. `ServeMux`
+prefers the more specific pattern, so every real route still wins.
+
 ### D33. The close frame goes out before the reader is unblocked
 Found by running the gateway tests under `-race`, which turned an occasional flake into a
 consistent failure: a connection the room closed with 1008 or 1002 arrived at the client as an
