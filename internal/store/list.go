@@ -114,7 +114,9 @@ func (s *Store) List(ctx context.Context, req ListRequest) (ListPage, error) {
 	// reading rather than by a second count query.
 	const query = `
 		SELECT d.id, d.name, d.owner_id, d.updated_at,
-		       coalesce(octet_length(d.snapshot), 0),
+		       CASE WHEN d.snapshot_key = ''
+		            THEN coalesce(octet_length(d.snapshot), 0)
+		            ELSE d.snapshot_bytes END,
 		       (SELECT count(*) FROM doc_updates u WHERE u.doc_id = d.id)
 		FROM documents d
 		WHERE ($1 OR d.owner_id = $2) AND (d.name, d.id) > ($3, $4)

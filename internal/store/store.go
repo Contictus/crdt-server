@@ -371,6 +371,10 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 	if err != nil {
 		return fmt.Errorf("store: write snapshot: %w", err)
 	}
+	// Recorded before the column is emptied, because afterwards nothing on this
+	// side knows how big the snapshot was. It is the stored size - what the
+	// document costs - not the size of the document it holds.
+	stored := int64(len(packed))
 	if key != "" {
 		// The bytes are in the object; the column holds nothing.
 		packed = nil
@@ -389,9 +393,9 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 	tag, err := tx.Exec(ctx,
 		`UPDATE documents
 		    SET snapshot = $2, snapshot_codec = $4, snapshot_key = $5,
-		        snapshot_seq = $3, updated_at = now()
+		        snapshot_bytes = $6, snapshot_seq = $3, updated_at = now()
 		  WHERE id = $1 AND snapshot_seq < $3`,
-		id, packed, watermark, codec, key)
+		id, packed, watermark, codec, key, stored)
 	if err != nil {
 		return fmt.Errorf("store: write snapshot: %w", err)
 	}

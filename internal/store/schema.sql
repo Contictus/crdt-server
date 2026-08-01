@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS documents (
     -- storage on does not migrate anything, and the rows written before it stay
     -- readable by the same query.
     snapshot_key  TEXT NOT NULL DEFAULT '',
+    -- How many bytes the object holds, for the rows whose snapshot_key is set.
+    -- Without it a listing would report octet_length(snapshot), which is zero
+    -- for exactly those rows - so the documents that cost the most storage
+    -- would be the ones reported as costing nothing. Meaningless when
+    -- snapshot_key is empty: the column beside it already knows its own size.
+    snapshot_bytes BIGINT NOT NULL DEFAULT 0,
     snapshot_seq  BIGINT NOT NULL DEFAULT 0,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -33,6 +39,10 @@ CREATE TABLE IF NOT EXISTS documents (
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS snapshot_codec SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE documents ADD COLUMN IF NOT EXISTS snapshot_key TEXT NOT NULL DEFAULT '';
+-- Rows written before this column report zero until they are compacted again,
+-- which is a listing that understates a document rather than one that cannot be
+-- read. Backfilling is impossible from here: only the bucket knows the size.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS snapshot_bytes BIGINT NOT NULL DEFAULT 0;
 
 -- Listing is always "this owner's documents, by name". The owner comes first
 -- because it is the equality, and multi-tenancy makes it the selective one.
@@ -71,6 +81,9 @@ CREATE TABLE IF NOT EXISTS doc_versions (
     -- second. An orphaned object costs storage; a row pointing at nothing is a
     -- version that cannot be read.
     blob_key      TEXT NOT NULL DEFAULT '',
+    -- The object's size, for the rows whose blob_key is set; see
+    -- documents.snapshot_bytes for why a listing cannot work it out otherwise.
+    blob_bytes    BIGINT NOT NULL DEFAULT 0,
     -- Set when somebody asked for this version by hand, empty for the ones the
     -- timer took. It is what makes "before the migration" findable in a list of
     -- timestamps.
@@ -80,6 +93,7 @@ CREATE TABLE IF NOT EXISTS doc_versions (
 
 ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS codec SMALLINT NOT NULL DEFAULT 0;
 ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS blob_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE doc_versions ADD COLUMN IF NOT EXISTS blob_bytes BIGINT NOT NULL DEFAULT 0;
 
 -- Listing and pruning both want the newest first for one document.
 CREATE INDEX IF NOT EXISTS doc_versions_recent ON doc_versions (doc_id, id DESC);
