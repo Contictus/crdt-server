@@ -61,6 +61,11 @@ into a snapshot every 500 updates, and written out when a room is evicted.
 Writes are batched, so a crash can lose up to `-flush-interval` (200 ms by default) of edits
 that clients still hold and resend on reconnect. `-durable-writes` closes that window by
 writing each update before relaying it, at the cost of a database round trip per keystroke.
+It waits for the write to be *attempted*, not to succeed: a write that fails is logged, counted
+on `ycollab_store_failed_total`, and the update is relayed anyway, because a room that
+blocked until the database came back would take the document down with it. So the flag bounds
+what a crash loses; it does not make the server refuse edits while the database is unreachable
+— alert on that counter [D73].
 
 `-max-conns` and `-max-rooms` bound what one node will hold. Both default to unlimited, which
 is right for a laptop and wrong for anything reachable; the Kubernetes manifests set them.

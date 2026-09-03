@@ -60,7 +60,7 @@ func run() error {
 		databaseURL   = flag.String("database-url", os.Getenv("YCOLLAB_DATABASE_URL"), "PostgreSQL connection string; empty keeps documents in memory only")
 		compactAfter  = flag.Int("compact-after", room.DefaultCompactAfter, "fold the update log into a snapshot after this many updates")
 		flushInterval = flag.Duration("flush-interval", room.DefaultFlushInterval, "how long an update may sit in memory before it is written")
-		durableWrites = flag.Bool("durable-writes", false, "write every update to the database before relaying it; removes the flush window at the cost of a round trip per update")
+		durableWrites = flag.Bool("durable-writes", false, "write every update to the database before relaying it; removes the flush window at the cost of a round trip per update. A write that fails is logged and counted and the update is relayed anyway, so this bounds what a crash loses, not what an unreachable database loses")
 		retention     = flag.Duration("retention", 0, "delete documents nothing has touched for this long; 0 keeps them forever")
 
 		s3Bucket    = flag.String("s3-bucket", os.Getenv("YCOLLAB_S3_BUCKET"), "keep snapshots and version payloads in this S3 bucket instead of in the database; empty keeps them in PostgreSQL")

@@ -371,6 +371,10 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 	if err != nil {
 		return fmt.Errorf("store: write snapshot: %w", err)
 	}
+	// Recorded before the column is emptied, because afterwards nothing on this
+	// side knows how big the snapshot was. It is the stored size - what the
+	// document costs - not the size of the document it holds.
+	stored := int64(len(packed))
 	if key != "" {
 		// The bytes are in the object; the column holds nothing.
 		packed = nil
@@ -389,9 +393,9 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 	tag, err := tx.Exec(ctx,
 		`UPDATE documents
 		    SET snapshot = $2, snapshot_codec = $4, snapshot_key = $5,
-		        snapshot_seq = $3, updated_at = now()
+		        snapshot_bytes = $6, snapshot_seq = $3, updated_at = now()
 		  WHERE id = $1 AND snapshot_seq < $3`,
-		id, packed, watermark, codec, key)
+		id, packed, watermark, codec, key, stored)
 	if err != nil {
 		return fmt.Errorf("store: write snapshot: %w", err)
 	}
@@ -428,9 +432,19 @@ func (s *Store) Compact(ctx context.Context, id UUID, snapshot []byte, folded []
 // Delete removes a document and its log. It reports whether there was one.
 //
 // The log goes with it through the foreign key's ON DELETE CASCADE, so this is
-// one statement and cannot leave orphaned updates behind. Callers are expected
-// to have stopped serving the document first: nothing here prevents a resident
-// room from writing a snapshot afterwards and bringing it back.
+// one statement and cannot leave orphaned updates behind.
+//
+// A room on another replica can outlive this call - DELETE evicts the room on
+// the replica that served it and tells no other - and its next write cannot
+// bring the document back. Append's foreign key has no parent to point at, and
+// Compact only ever updates a row it expects to find. Both fail loudly and are
+// counted; the document stays gone. See the test that holds this.
+//
+// What is lost is what those clients typed between the delete and their room's
+// eviction, which is the honest cost of deleting a document somebody else is
+// still editing. With object storage on, the failed compaction has already
+// written its snapshot object by then, and nothing will ever name it: one
+// orphan per attempt, bounded by the key carrying its sequence number.
 func (s *Store) Delete(ctx context.Context, id UUID) (bool, error) {
 	// The keys are collected before the rows go, because after the cascade
 	// nothing remembers which objects this document owned.
@@ -460,10 +474,12 @@ func (s *Store) Delete(ctx context.Context, id UUID) (bool, error) {
 // hot path and retention runs a few times a day.
 //
 // A document that is currently resident in some replica's memory can still be
-// caught here, and would be recreated empty by the next snapshot that replica
-// writes. That is why the server only runs this against documents nothing has
-// touched for days, and why the interval is a deployment's decision rather than
-// a default.
+// caught here. That replica's writes then fail the same way they do after a
+// DELETE, and for the same reason - see the note there - so the row does not
+// come back and neither does the document. What the sweep can take is what a
+// long-open connection had not written yet, which is why the server only runs
+// this against documents nothing has touched for days, and why the interval is
+// a deployment's decision rather than a default.
 func (s *Store) DeleteIdle(ctx context.Context, before time.Time) (int64, error) {
 	// RETURNING gathers the objects to drop in the same statement that removes
 	// the rows, so nothing has to be listed first and then re-found. The version

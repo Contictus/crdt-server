@@ -101,6 +101,10 @@ func (s *Store) SaveVersion(ctx context.Context, id UUID, v Version, minAge time
 	if err != nil {
 		return false, err
 	}
+	// The stored size, taken before the column is emptied: after that nothing
+	// here knows it, and length(payload) would report zero for exactly the rows
+	// that cost the most.
+	stored := int64(len(packed))
 	if key != "" {
 		// Empty rather than nil: payload is NOT NULL, and the constraint is
 		// worth keeping - a version row with no payload and no key would be a
@@ -109,15 +113,15 @@ func (s *Store) SaveVersion(ctx context.Context, id UUID, v Version, minAge time
 		packed = []byte{}
 	}
 	tag, err := tx.Exec(ctx,
-		`INSERT INTO doc_versions (doc_id, state_vector, payload, label, codec, blob_key)
-		 SELECT $1, $2, $3, $4, $6, $7
+		`INSERT INTO doc_versions (doc_id, state_vector, payload, label, codec, blob_key, blob_bytes)
+		 SELECT $1, $2, $3, $4, $6, $7, $8
 		  WHERE EXISTS (SELECT 1 FROM documents WHERE id = $1)
 		    AND NOT EXISTS (
 		          SELECT 1 FROM doc_versions v
 		           WHERE v.doc_id = $1
 		             AND (v.created_at > now() - $5::interval OR v.state_vector = $2)
 		             AND v.id = (SELECT max(id) FROM doc_versions WHERE doc_id = $1))`,
-		id, v.StateVector, packed, v.Label, minAge, codec, key)
+		id, v.StateVector, packed, v.Label, minAge, codec, key, stored)
 	if err != nil {
 		s.dropBlob(ctx, key)
 		return false, fmt.Errorf("store: save version: %w", err)
@@ -139,8 +143,12 @@ func (s *Store) ListVersions(ctx context.Context, id UUID, limit int) ([]Version
 	if limit <= 0 {
 		limit = 50
 	}
+	// The size comes from whichever column actually holds the bytes: a row in
+	// object storage has an empty payload, so length(payload) alone would report
+	// every S3-backed version as costing nothing.
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, created_at, state_vector, label, length(payload)
+		`SELECT id, created_at, state_vector, label,
+		        CASE WHEN blob_key = '' THEN octet_length(payload) ELSE blob_bytes END
 		   FROM doc_versions WHERE doc_id = $1 ORDER BY id DESC LIMIT $2`,
 		id, limit)
 	if err != nil {

@@ -28,6 +28,13 @@ metadata:
 #
 # It is here as a placeholder so that `kubectl apply` of this file alone does
 # not silently start an open server with no persistence.
+#
+# The two credentials below are deliberately too short to be accepted - the
+# server refuses a signing secret under 32 bytes and an admin token under 16 -
+# so a cluster that applied this file unedited gets pods that crash-loop with
+# the reason in their logs. That is the intended outcome. A placeholder long
+# enough to pass validation would instead produce a running server whose secret
+# is published in this repository, which is an open server with extra steps.
 apiVersion: v1
 kind: Secret
 metadata:
@@ -37,12 +44,11 @@ type: Opaque
 stringData:
   database-url: "postgres://ycollab:ycollab@postgres:5432/ycollab"
   redis-url: "redis://redis:6379"
-  # Replace this. A server started with a secret from a git repository is an
-  # open server with extra steps.
-  jwt-secret: "replace-me-with-at-least-32-random-bytes"
+  # Replace. `go run ./cmd/ycollab-token -gen-secret`
+  jwt-secret: "REPLACE-ME"
   # Guards the admin listener, which can read, overwrite and delete every
   # document. Replace this one too - `openssl rand -hex 32`.
-  admin-token: "replace-me-with-at-least-32-random-bytes"
+  admin-token: "REPLACE-ME"
 
 ---
 apiVersion: apps/v1
@@ -58,10 +64,28 @@ spec:
   template:
     metadata:
       labels: { app: ycollab }
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "6060"
-        prometheus.io/path: "/metrics"
+      # No prometheus.io/scrape annotations. The admin listener requires the
+      # token below, and annotation-based discovery has nowhere to put a
+      # credential - it would produce a scrape job that collects 401s and an
+      # alert rule that fires because nothing is being scraped. Point Prometheus
+      # at the headless Service further down instead, with the token:
+      #
+      #   - job_name: ycollab
+      #     kubernetes_sd_configs:
+      #       - role: endpoints
+      #         namespaces: { names: [ycollab] }
+      #     relabel_configs:
+      #       - source_labels: [__meta_kubernetes_endpoints_name,
+      #                         __meta_kubernetes_endpoint_port_name]
+      #         regex: ycollab-admin;admin
+      #         action: keep
+      #     authorization:
+      #       type: Bearer
+      #       credentials_file: /etc/prometheus/secrets/ycollab/admin-token
+      #
+      # With the Prometheus Operator the same thing is a ServiceMonitor whose
+      # `authorization.credentials` names the `admin-token` key of the Secret
+      # above, with the Secret mirrored into Prometheus's namespace.
     spec:
       # A pod being replaced holds WebSocket connections that are worth closing
       # properly: the server drains its listener and sends 1001, and clients
@@ -73,8 +97,19 @@ spec:
         fsGroup: 65534
       containers:
         - name: server
-          image: ycollab:latest
-          imagePullPolicy: IfNotPresent
+          # A registry, not a bare `ycollab:latest`: a name with no registry
+          # resolves to Docker Hub, where this image is not, so every pod on a
+          # normal cluster would sit in ImagePullBackOff.
+          #
+          # `main` is the tip of the branch, which is what exists while nothing
+          # has been released yet. Pin this to a version tag - the release
+          # workflow publishes one per `v*` tag - as soon as there is one:
+          # a floating tag makes "which build is running" a question with no
+          # answer, and the pods here already report their build on /statsz.
+          image: ghcr.io/mesutokul/ycollab:main
+          # Always, because the tag above moves. A version tag does not, and
+          # IfNotPresent is the right setting the moment this is pinned.
+          imagePullPolicy: Always
           args:
             - -addr=:8080
             # Bound to all interfaces because "localhost" in a pod means the
@@ -224,6 +259,17 @@ spec:
 # timeout on them. The annotations here are nginx's; another controller needs
 # its own equivalents, and getting this wrong shows up as every client
 # reconnecting exactly every 60 seconds.
+#
+# TLS is not optional here, and not only for the usual reason: the token that
+# authorises a connection travels in the WebSocket URL's query string, because
+# the browser WebSocket API has no way to set a header. On plain ws:// that
+# capability is on the wire in clear text. The Secret below is expected to exist
+# already - cert-manager writes one, or `kubectl create secret tls`.
+#
+# The host is where the WebSocket lives, and it is deliberately not the host in
+# YCOLLAB_ORIGINS above: that one is the origin of the page holding the editor,
+# which is what the browser sends as Origin and what the server checks. An
+# application served from the same host would name this host in both.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -232,7 +278,17 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # No plain-HTTP route to the same address, so a client that starts at ws://
+    # is redirected rather than served.
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
 spec:
+  # Named rather than left to the cluster's default: a cluster with two
+  # controllers, or with none marked default, silently leaves this Ingress
+  # unclaimed and the address never starts answering.
+  ingressClassName: nginx
+  tls:
+    - hosts: [collab.example.com]
+      secretName: ycollab-tls
   rules:
     - host: collab.example.com
       http:

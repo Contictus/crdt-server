@@ -140,6 +140,69 @@ func TestASnapshotGoesToTheBucket(t *testing.T) {
 	}
 }
 
+// A listing has to report what a document costs whichever side of the two
+// columns the bytes are on. It reports the stored size, so a compressible
+// document is smaller here than the snapshot handed in - what it must not be is
+// zero, which is what reading the empty column alone would say.
+func TestAListingReportsTheSizeOfABlobBackedDocument(t *testing.T) {
+	s, _, ctx := blobStore(t)
+	id, name := newDoc(t, s, ctx, "s3-size")
+
+	snapshot := bytes.Repeat([]byte("a document that is worth storing "), 400)
+	seqs, err := s.Append(ctx, id, [][]byte{{0, 0}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Compact(ctx, id, snapshot, seqs); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := s.List(ctx, store.ListRequest{AllOwners: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, d := range page.Documents {
+		if d.Name != name {
+			continue
+		}
+		found = true
+		if d.SnapshotBytes <= 0 {
+			t.Errorf("snapshot bytes = %d for a document whose snapshot is an object", d.SnapshotBytes)
+		}
+		if d.SnapshotBytes > int64(len(snapshot)) {
+			t.Errorf("snapshot bytes = %d, more than the %d handed in", d.SnapshotBytes, len(snapshot))
+		}
+	}
+	if !found {
+		t.Fatalf("%q is not in the listing", name)
+	}
+}
+
+// The same claim for history, which is the larger of the two: a version listing
+// exists to decide what to fetch, and every row reporting zero would make it
+// useless for that.
+func TestAVersionListingReportsTheSizeOfABlobBackedVersion(t *testing.T) {
+	s, _, ctx := blobStore(t)
+	id, _ := newDoc(t, s, ctx, "s3-version-size")
+
+	payload := bytes.Repeat([]byte("history is the expensive part "), 400)
+	if written, err := s.SaveVersion(ctx, id, store.Version{StateVector: []byte{1}, Payload: payload}, 0); err != nil || !written {
+		t.Fatalf("written=%v err=%v", written, err)
+	}
+
+	list, err := s.ListVersions(ctx, id, 0)
+	if err != nil || len(list) != 1 {
+		t.Fatalf("%d versions, err=%v", len(list), err)
+	}
+	if list[0].Bytes <= 0 {
+		t.Errorf("bytes = %d for a version whose payload is an object", list[0].Bytes)
+	}
+	if list[0].Bytes > len(payload) {
+		t.Errorf("bytes = %d, more than the %d handed in", list[0].Bytes, len(payload))
+	}
+}
+
 func TestAVersionGoesToTheBucket(t *testing.T) {
 	s, _, ctx := blobStore(t)
 	id, _ := newDoc(t, s, ctx, "s3-version")

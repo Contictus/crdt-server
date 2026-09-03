@@ -599,6 +599,17 @@ editing when the server died still holds its own copy and sends it back on
 reconnect. It exists because "how much may we lose" is a question only the
 deployment can answer, and the honest answer for some of them is "nothing".
 
+What it promises is narrower than the name suggests, and the difference matters
+when reading an incident: the room waits for the write to be attempted, not for
+it to succeed. A failed write is logged and counted on
+`ycollab_store_failed_total`, and the update is relayed regardless. The
+alternative - block until the database answers - turns a database outage into
+every document on the server hanging, with the edits still only in memory
+either way. So the flag closes the flush window against a crash; it does not
+turn the server into one that refuses edits it cannot store. A deployment that
+needs the second thing needs an alert on that counter and a decision about what
+to do when it fires, because this server does not have one to make on its own.
+
 ### D74. Documents can be deleted, and retention is opt-in
 `DELETE /documents/{name}` on the admin listener removes a document from memory
 and from the database; the log goes with it through the foreign key's cascade. A
