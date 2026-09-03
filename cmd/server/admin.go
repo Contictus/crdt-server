@@ -27,9 +27,16 @@ import (
 // credentials.
 //
 // A document somebody is currently editing is refused rather than deleted out
-// from under them. Once the room is out of memory, nothing is left to write a
-// snapshot back, though a client connecting the moment afterwards will of course
-// create the document again, empty.
+// from under them - on this replica. The eviction is local, so another replica
+// may still be holding the same document, and this endpoint does not wait for
+// it to notice. It does not have to: a room whose document has been deleted
+// cannot write it back, only lose what its clients typed in the meantime, which
+// internal/store's Delete sets out and a test holds.
+//
+// A client connecting the moment afterwards will of course create the document
+// again, empty. That is a new document that shares a name, not the old one
+// returning, and no server-side lock could change it without also refusing to
+// serve a name forever.
 func deleteDocument(manager *room.Manager, documents *store.Store, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
