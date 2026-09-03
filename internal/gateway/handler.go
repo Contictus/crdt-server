@@ -277,6 +277,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.reject(r.Context(), ws, errNotYours)
 			return
 		}
+		// The process is going down and this connection arrived a moment too
+		// late. It is a routine part of a deploy, not a fault, so it closes the
+		// same way but without a warning line per in-flight client.
+		if errors.Is(err, room.ErrManagerClosed) {
+			h.log.Debug("refusing a connection: shutting down", "room", name)
+			_ = ws.Close(websocket.StatusTryAgainLater, "server shutting down")
+			return
+		}
 		h.log.Warn("join failed", "room", name, "err", err)
 		_ = ws.Close(websocket.StatusTryAgainLater, truncateReason(err.Error()))
 		return

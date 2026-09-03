@@ -19,6 +19,13 @@ import (
 // name is enough to hold an unbounded number of documents.
 var ErrTooManyRooms = errors.New("room: resident room limit reached")
 
+// ErrManagerClosed means the manager is draining: its context is cancelled and
+// Wait has been called, so no new room will be started. A join that arrives
+// during shutdown - a WebSocket handler that outlived srv.Shutdown, since a
+// hijacked connection is not one Shutdown waits for - gets this instead of
+// racing Wait for the room WaitGroup.
+var ErrManagerClosed = errors.New("room: manager is shutting down")
+
 // ManagerConfig configures the registry and the rooms it creates.
 type ManagerConfig struct {
 	// Room is the template every room is created from. Name, OnExit and Logger
@@ -43,8 +50,12 @@ type Manager struct {
 	cfg ManagerConfig
 	ctx context.Context
 
-	mu    sync.Mutex
-	rooms map[string]*Room
+	mu sync.Mutex
+	// closed is set by Wait and checked before a room is started, so that the
+	// increment to wg and Wait's read of it are ordered by mu rather than
+	// racing. Once true the manager starts no more rooms.
+	closed bool
+	rooms  map[string]*Room
 	// used orders rooms for the LRU cap: the value is a counter, not a clock,
 	// so two joins in the same nanosecond still order.
 	used  map[string]uint64
@@ -179,6 +190,12 @@ func (m *Manager) tryGet(name, owner string) (*Room, []*Room, error) {
 		}
 		m.touch(name)
 		return r, nil, nil
+	}
+	// Past here a room is created and wg is incremented. If Wait has run, that
+	// increment would race its read of wg, so refuse instead - the caller is a
+	// connection that arrived while the process was already going down.
+	if m.closed {
+		return nil, nil, ErrManagerClosed
 	}
 	if m.cfg.MaxRooms > 0 && len(m.rooms) >= m.cfg.MaxRooms {
 		m.pressure = "cap"
@@ -348,4 +365,14 @@ func (m *Manager) Len() int {
 
 // Wait blocks until every room goroutine has returned. Callers cancel the
 // context first; this is the drain half of a graceful shutdown.
-func (m *Manager) Wait() { m.wg.Wait() }
+//
+// Marking the manager closed under mu before reading wg is what makes a join
+// racing shutdown safe: tryGet increments wg under the same mu and only when
+// closed is false, so either the increment is ordered before this read or it
+// never happens.
+func (m *Manager) Wait() {
+	m.mu.Lock()
+	m.closed = true
+	m.mu.Unlock()
+	m.wg.Wait()
+}
