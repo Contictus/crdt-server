@@ -111,7 +111,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: |
           set -euo pipefail
-          printed=$(docker run --rm "${IMAGE}:${GITHUB_REF_NAME#v}" -version)
+          # ${IMAGE} carries github.repository verbatim, and an org login may
+          # have capitals a registry reference is not allowed to. The push went
+          # through docker/metadata-action, which lowercases; this pull-back has
+          # to do the same or docker rejects the reference before it starts.
+          ref="${IMAGE,,}:${GITHUB_REF_NAME#v}"
+          printed=$(docker run --rm "$ref" -version)
           echo "$printed"
           case "$printed" in
             *"${GITHUB_REF_NAME}"*) ;;
