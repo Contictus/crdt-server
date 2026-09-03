@@ -42,8 +42,10 @@ type server struct {
 	admin string
 	// logs is the process log, which the server writes to stderr. audit is its
 	// stdout, kept apart on purpose: the audit trail is meant to be a separate
-	// stream, and a test that merged them could not tell whether it is.
-	logs  *bytes.Buffer
+	// stream, and a test that merged them could not tell whether it is. Both are
+	// lockedBuffer: os/exec's copier writes to them from its own goroutine while
+	// the test reads, so an unguarded bytes.Buffer here is a data race.
+	logs  *lockedBuffer
 	audit *lockedBuffer
 }
 
@@ -64,6 +66,15 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// Bytes returns a copy: the buffer's own slice aliases storage the copier
+// goroutine may still be writing into, so handing it out would move the race
+// rather than remove it.
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
 }
 
 // buildServer compiles the binary once per test binary run.
@@ -93,7 +104,7 @@ func freePort(t *testing.T) string {
 
 func startServer(t *testing.T, binary, addr, dbURL string, extra ...string) *server {
 	t.Helper()
-	logs := &bytes.Buffer{}
+	logs := &lockedBuffer{}
 	admin := freePort(t)
 	args := append([]string{
 		"-addr", addr,

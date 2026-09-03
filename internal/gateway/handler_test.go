@@ -336,7 +336,13 @@ func TestAuthorizeSeesTheDocumentName(t *testing.T) {
 			return gateway.Grant{Write: true}, nil
 		},
 	})
-	dial(t, srv, "the-document")
+	c := dial(t, srv, "the-document")
+	// Drive one exchange so ServeHTTP is past room.Join and parked in its read
+	// loop before this test returns. Without it t.Cleanup can start tearing the
+	// room manager down while the handler goroutine is still inside Join, which
+	// -race reports as a data race on the manager.
+	c.send(protocol.WriteSyncStep1(emptyStateVector(t)))
+	c.recv()
 	select {
 	case got := <-seen:
 		if got != "the-document" {
