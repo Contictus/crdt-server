@@ -14,7 +14,7 @@ name: ycollab-quickstart
 
 services:
   ycollab:
-    image: ghcr.io/mesutokul/ycollab:latest
+    image: ghcr.io/contictus/crdt-server:latest
     command:
       - -addr=:8080
       - -admin-addr=:6060

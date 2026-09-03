@@ -1,6 +1,6 @@
 # ycollab-client
 
-A thin client for [ycollab](https://github.com/mesutokul/ycollab), on top of the real
+A thin client for [ycollab](https://github.com/Contictus/crdt-server), on top of the real
 `y-websocket` provider.
 
 ```sh

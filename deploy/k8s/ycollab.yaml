@@ -106,7 +106,7 @@ spec:
           # workflow publishes one per `v*` tag - as soon as there is one:
           # a floating tag makes "which build is running" a question with no
           # answer, and the pods here already report their build on /statsz.
-          image: ghcr.io/mesutokul/ycollab:main
+          image: ghcr.io/contictus/crdt-server:main
           # Always, because the tag above moves. A version tag does not, and
           # IfNotPresent is the right setting the moment this is pinned.
           imagePullPolicy: Always

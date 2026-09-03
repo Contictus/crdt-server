@@ -39,7 +39,7 @@ docker compose -f deploy/docker-compose.quickstart.yml up
 editing the same document, and then to the one flag that stops it being open to
 everybody. Five minutes.
 
-The image is `ghcr.io/mesutokul/ycollab`, published on tags for `linux/amd64`
+The image is `ghcr.io/contictus/crdt-server`, published on tags for `linux/amd64`
 and `linux/arm64`. `ycollab -version` says which build it is, and so does the
 first line of its log.
 

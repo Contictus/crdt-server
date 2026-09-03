@@ -14,6 +14,11 @@ The directory is named `CrdtServer`, the project is named `ycollab`. Rejected
 `github.com/mesutokul/crdtserver` — the import path should read like the product, and the
 directory name is an accident of where the repo was cloned.
 
+The repository itself is hosted at `github.com/Contictus/crdt-server`, and the released
+image follows the repo (`ghcr.io/contictus/crdt-server`, from `github.repository` in the
+Release workflow). The module path is left pointing at the product name deliberately and is
+not required to resolve as a `go get` target.
+
 ### D2. Fixture tooling depends on real `yjs`, pinned to exact versions
 `tools/fixturegen` installs `yjs`, `y-protocols`, `lib0` with `--save-exact`. Rejected
 caret ranges: the fixtures are checked in as binary, so a silent minor-version bump that
