@@ -278,7 +278,8 @@ func (m *Manager) settleOwner(name string, want store.UUID) error {
 const settleTimeout = 10 * time.Second
 
 // byLeastRecentlyUsed lists the resident rooms, oldest use first. Called with
-// the lock held.
+// the lock held. Ordering is by touch counter, not by wall time, so two
+// joins in the same tick still have a deterministic LRU order.
 func (m *Manager) byLeastRecentlyUsed() []*Room {
 	names := make([]string, 0, len(m.rooms))
 	for n := range m.rooms {
@@ -293,6 +294,8 @@ func (m *Manager) byLeastRecentlyUsed() []*Room {
 }
 
 // touch records that a room was just used. Called with the lock held.
+// clock is monotonic and never wraps in practice; used is compared only
+// for ordering, not for absolute time.
 func (m *Manager) touch(name string) {
 	m.clock++
 	m.used[name] = m.clock
