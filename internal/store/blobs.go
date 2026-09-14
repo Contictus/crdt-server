@@ -94,7 +94,9 @@ func (s *Store) putVersionBlob(ctx context.Context, id UUID, body []byte) (strin
 
 // putBlob writes a payload to object storage, returning the key to record.
 // Returns an empty key when object storage is not configured, which is the
-// signal to store the bytes in the column instead.
+// signal to store the bytes in the column instead. Callers always write the
+// object before the row (see package comment), so a failure here leaves no
+// orphan.
 func (s *Store) putBlob(ctx context.Context, key string, body []byte) (string, error) {
 	if s.blobs == nil {
 		return "", nil
