@@ -86,7 +86,10 @@ func (e Envelope) Encode() ([]byte, error) {
 	return enc.Bytes(), nil
 }
 
-// Decode parses one envelope. The payload aliases buf.
+// Decode parses one envelope. The payload aliases buf, so the caller must
+// not reuse buf until the payload is no longer needed. Trailing bytes and
+// unknown versions/kinds are refused rather than skipped: a rolling restart
+// with mixed builds should be visible in the logs, not silent.
 func Decode(buf []byte) (Envelope, error) {
 	d := lib0.NewDecoder(buf)
 	version, err := d.ReadVarUint()
