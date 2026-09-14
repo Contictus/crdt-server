@@ -105,9 +105,10 @@ http://localhost:5173/?token=<the token>#hello
 A token names one document and expires, so one that leaks opens one document
 until it does. In a real deployment the application that knows who its users are
 mints these — it holds the same secret and signs
-`{ "doc": "notes", "perm": "write", "exp": … }` with HS256. If you would rather
-your application answer a question per connection than mint tokens, that is
-`-auth-url`, in the README.
+`{ "doc": "notes", "perm": "write", "exp": … }` with HS256. The `doc` claim is
+matched verbatim against the URL path, so a token for `hello` cannot open
+`notes`. If you would rather your application answer a question per connection
+than mint tokens, that is `-auth-url`, in the README.
 
 ## 5. The client package, if you want it
 
