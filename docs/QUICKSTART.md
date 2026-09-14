@@ -139,8 +139,10 @@ client.on('denied', ({ reason }) => showBanner(reason))
 
 - [README](../README.md) — every flag, and what each one is for.
 - [Running it for real](../README.md#running-it-for-real) — the Kubernetes
-  manifests, which set the limits this quickstart leaves off.
-- [RUNBOOK](RUNBOOK.md) — what to do when it misbehaves.
+  manifests, which set the limits this quickstart leaves off (`-max-conns`,
+  `-max-rooms`, `-max-memory`, `-trusted-proxies`).
+- [RUNBOOK](RUNBOOK.md) — what to do when it misbehaves, including backup
+  and restore transcripts.
 - [DECISIONS](../DECISIONS.md) — why it is built this way, and what is still
   open.
 
