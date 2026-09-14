@@ -82,14 +82,16 @@ ycollab -max-memory 4GiB     # or 4GB, or 4096MB, or a plain number of bytes
 
 Each room measures its own document — a walk of the struct store, costing single
 digit microseconds for a document of a realistic size — and re-measures only when
-it has changed. The total is `ycollab_rooms_resident_bytes`, and it is the figure
-to put next to the pod's limit on a dashboard.
+it has changed (every `UsageInterval`, 15 s by default). The total is
+`ycollab_rooms_resident_bytes`, and it is the figure to put next to the pod's
+limit on a dashboard.
 
 The estimate is arithmetic over the structures, not a constant: item headers come
-from `unsafe.Sizeof`, and what they point at is added separately. Measured
-against real heap growth it lands at **0.91–1.00x**. It is a floor by
+from `unsafe.Sizeof`, and what they point at is added separately (see
+`internal/crdt/memory.go` and `internal/room/memory.go`). Measured against real
+heap growth it lands at **0.91–1.00x** (DECISIONS D129). It is a floor by
 construction — it does not model size classes, map buckets or the collector — so
-leave headroom.
+leave headroom (25–30% is the guidance the runbook gives).
 
 **Two honest limits.**
 
