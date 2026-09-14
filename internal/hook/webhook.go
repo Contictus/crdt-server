@@ -202,7 +202,8 @@ func redact(u *url.URL) string {
 // Emit queues an event. It never blocks: a full queue drops the event and says
 // so in a counter. The room goroutine calls this, and everything a client does
 // is behind that goroutine, so waiting here would be waiting on the receiver
-// with the document held hostage.
+// with the document held hostage. Dropped events are not retried; anti-entropy
+// on the document path is lossless, hooks are best-effort by design (D81).
 func (w *Webhook) Emit(e Event) {
 	if !w.want[e.Kind] {
 		return
