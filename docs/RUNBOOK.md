@@ -434,11 +434,15 @@ promise:
 | 200 clients, 2 rooms | 98 003 updates/s | 1.93 ms | 0 dropped frames |
 
 One `ApplyUpdate` is about 630 ns; encoding a document as an update is about
-26 µs. The engine is not the limit — network and fanout are.
+26 µs. The engine is not the limit — network and fanout are. These numbers were
+taken with `go test -race` off; the race detector adds ~5-10x overhead and is
+not representative of production latency.
 
 Bounds a deployment should set, because the defaults are unlimited and that is
-right for a laptop and wrong for anything reachable: `-max-conns`, `-max-rooms`.
-The Kubernetes manifests in `deploy/k8s/` set both.
+right for a laptop and wrong for anything reachable: `-max-conns`, `-max-rooms`
+and `-max-memory`. The Kubernetes manifests in `deploy/k8s/` set all three, and
+the README's [Memory](../README.md#memory) section explains how the byte budget
+relates to the container limit.
 
 ## A document is wrong
 
