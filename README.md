@@ -912,7 +912,6 @@ tools/fixturegen      Node: generates the binary fixtures from real yjs
 tools/verify          Node: applies Go-produced updates in real yjs
 tools/soak            Node: drives real clients at a running server
 client                the optional npm package: token refresh, refusals, subdocuments
-client                the optional npm package: token refresh, refusals, subdocuments
 web                   TipTap + y-websocket demo
 deploy                docker-compose for local Postgres and Redis, plus the cluster
 deploy/k8s            Kubernetes manifests
