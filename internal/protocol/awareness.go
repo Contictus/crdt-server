@@ -328,20 +328,9 @@ func (a *Awareness) RemoveClients(clients []uint64, now time.Time) ([]uint64, []
 	return a.remove(present, now)
 }
 
-// remove drops the given clients and encodes the announcement. It is the
-// shared implementation of Sweep and RemoveClients.
-//
-// The clock is deliberately left alone. A removal is accepted by peers at an
-// equal clock (awareness.js:250), so bumping is unnecessary - and actively
-// harmful: the client whose state we just dropped does not know we bumped it,
-// so its next announcement, one clock ahead of what it last sent, would land on
-// an equal clock here and be rejected. It would then stay invisible until its
-// own 15 s renewal pushed it past us. A reconnect must not cost a client half a
-// minute of being a ghost. y-protocols does the same thing for the same reason:
-// removeAwarenessStates only bumps the clock of the *local* client
-// (awareness.js:175-181), never of the peers it is dropping.
-
-// forgetOldest drops removed entries until the map is under limit.
+// forgetOldest drops removed entries until the map is under limit. It
+// evicts the oldest removed client first, because that one is least likely
+// to still have a duplicate update in flight (see forgetAfter).
 func (a *Awareness) forgetOldest(limit int) {
 	for len(a.entries) >= limit {
 		var oldest uint64
@@ -362,8 +351,17 @@ func (a *Awareness) forgetOldest(limit int) {
 	}
 }
 
-// remove is the shared half of Sweep and RemoveClients; see the note above
-// forgetOldest for why the clock is left where it is.
+// remove is the shared half of Sweep and RemoveClients. It drops the given
+// clients, encodes the null-state announcement and leaves the clock alone.
+//
+// The clock is deliberately left alone. A removal is accepted by peers at an
+// equal clock (awareness.js:250), so bumping is unnecessary — and actively
+// harmful: the client whose state we just dropped does not know we bumped it,
+// so its next announcement, one clock ahead of what it last sent, would land on
+// an equal clock here and be rejected. It would then stay invisible until its
+// own 15 s renewal pushed it past us. y-protocols does the same thing for the
+// same reason: removeAwarenessStates only bumps the clock of the *local* client
+// (awareness.js:175-181), never of the peers it is dropping.
 func (a *Awareness) remove(clients []uint64, now time.Time) ([]uint64, []byte, error) {
 	for _, id := range clients {
 		e := a.entries[id]
