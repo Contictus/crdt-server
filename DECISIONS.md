@@ -1709,6 +1709,13 @@ was disconnected.
 `github.com/coder/websocket` requires it. The brief asks for Go 1.22+, so this is inside the
 constraint; noting it because it was a side effect of `go get`, not a decision made on purpose.
 
+### D135. Documentation now references measured numbers, not estimates
+README, RUNBOOK and QUICKSTART previously quoted a single throughput figure
+from an early laptop run. Follow-up commits replace those with the measured
+ranges across corpora and clarify which numbers are shape versus promise. The
+intent is that an operator sizing from the docs gets a range rather than a
+point estimate that was never re-measured.
+
 ---
 
 ## Part 2 — The wire format, derived from source
