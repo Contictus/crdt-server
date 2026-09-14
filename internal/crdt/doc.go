@@ -408,7 +408,8 @@ func (d *Doc) resolveConflict(it *Item) *Item {
 }
 
 // itemAt returns the item covering id, or nil. It is only used for set
-// membership, where a miss and a nil are equivalent.
+// membership in YATA conflict resolution, where a miss and a nil are
+// equivalent and both mean "not in the conflicting set".
 func (d *Doc) itemAt(id ID) *Item {
 	it, err := d.store.GetItem(id)
 	if err != nil {
@@ -417,6 +418,7 @@ func (d *Doc) itemAt(id ID) *Item {
 	return it
 }
 
+// leftmost walks to the start of a doubly-linked item list.
 func leftmost(it *Item) *Item {
 	for it != nil && it.left != nil {
 		it = it.left
@@ -424,6 +426,7 @@ func leftmost(it *Item) *Item {
 	return it
 }
 
+// sameID reports whether two IDs are equal, treating two nils as equal.
 func sameID(a, b *ID) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -431,6 +434,9 @@ func sameID(a, b *ID) bool {
 	return *a == *b
 }
 
+// deleteItem marks a single item deleted. It is the only place that flips
+// the deleted bit outside of integration, so the invariant that a deleted
+// item stays deleted is checked in one function.
 func (d *Doc) deleteItem(it *Item) {
 	if it.deleted {
 		return
