@@ -52,7 +52,9 @@ var (
 	ErrTooManyClients = errors.New("protocol: too many awareness clients")
 )
 
-// Limits bound what an Awareness will hold.
+// Limits bound what an Awareness will hold. Both dimensions are needed
+// because a state and a client count are different floods: a single huge
+// state and many small states both exhaust the room, but on different axes.
 type Limits struct {
 	// MaxState is the largest state a client may publish, in bytes. Zero means
 	// DefaultMaxState; negative means no limit.
@@ -326,7 +328,8 @@ func (a *Awareness) RemoveClients(clients []uint64, now time.Time) ([]uint64, []
 	return a.remove(present, now)
 }
 
-// remove drops the given clients and encodes the announcement.
+// remove drops the given clients and encodes the announcement. It is the
+// shared implementation of Sweep and RemoveClients.
 //
 // The clock is deliberately left alone. A removal is accepted by peers at an
 // equal clock (awareness.js:250), so bumping is unnecessary - and actively
